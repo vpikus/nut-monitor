@@ -1,10 +1,15 @@
 import socket
 import logging
 
-class NutSock:
-    """NUT (Network UPS Tools) socket helpper."""
+DEF_PORT = 3493
+DEF_TIMEOUT = 5
 
-    def __init__(self, host="127.0.0.1", port=3493, timeout=5):
+class NutSock:
+    """NUT (Network UPS Tools) socket helper."""
+
+    LOG = logging.getLogger(__name__)
+
+    def __init__(self, host="127.0.0.1", port=DEF_PORT, timeout=DEF_TIMEOUT):
         """
         Class initialization method.
 
@@ -13,21 +18,21 @@ class NutSock:
         - port (int): The port number of the NUT server.
         - timeout (int): The timeout in seconds for the socket connection.
         """
-        self.logger = logging.getLogger(__name__)
-        self.logger.debug("NutSock initialization")
-        self.logger.debug(f"\tHost: {host}, Port: {port}")
-        
+        self.LOG = logging.getLogger(__name__)
+        self.LOG.debug("NutSock initialization")
+        self.LOG.debug(f"\tHost: {host}, Port: {port}")
+
         self.host = host
         self.port = port
         self.timeout = timeout
         self.sock = None
         self.raw_queue = None
-    
+
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
-        self.logger.debug("Closing NUT connection")
+        self.LOG.debug("Closing NUT connection")
         if self.sock:
             self.sock.close()
         self.sock = None
@@ -40,7 +45,7 @@ class NutSock:
         Returns:
         - self: The NutSock object.
         """
-        self.logger.debug("Connecting to NUT server")
+        self.LOG.debug("Connecting to NUT server")
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.settimeout(self.timeout)
         self.sock.connect((self.host, self.port))
@@ -55,14 +60,14 @@ class NutSock:
         Returns:
         - str: The response from the NUT server.
         """
-        self.logger.debug(f"Sending command:\n{command}")
+        self.LOG.debug(f"Sending command:\n{command}")
         self.sock.sendall(f"{command}\n".encode("utf-8"))
-        
+
     def read_until(self, untilText):
         """
-        Read from the socket until the specified text is found. The method accumulates 
-        data read from the socket in a 'raw_queue'. Once the 'untilText' is encountered, 
-        the method returns the accumulated data up to and including 'untilText'. 
+        Read from the socket until the specified text is found. The method accumulates
+        data read from the socket in a 'raw_queue'. Once the 'untilText' is encountered,
+        the method returns the accumulated data up to and including 'untilText'.
         The data beyond 'untilText' is saved in the 'raw_queue' for future reads.
 
         Parameters:
@@ -77,5 +82,5 @@ class NutSock:
         pos = buf.find(untilText) + len(untilText)
         self.raw_queue = buf[pos:]
         response = buf[:pos]
-        self.logger.debug(f"Received response:\n{response}")
+        self.LOG.debug(f"Received response:\n{response}")
         return response
