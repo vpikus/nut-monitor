@@ -35,9 +35,13 @@ def load_config_and_initialize():
 
 nut = load_config_and_initialize()
 
+#Function for load balancer health check
+@app.route('/health')
+def health():
+    return 'OK', 200
+
 @app.route('/servers', methods=['GET'])
 def get_servers():
-    logging.debug("Getting list of servers")
     return jsonify(list(nut.keys()))
 
 @app.route('/servers/<servername>/ups', methods=['GET'])

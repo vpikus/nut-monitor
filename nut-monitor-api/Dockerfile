@@ -33,4 +33,9 @@ COPY --chown=nonroot:nonroot src/ .
 # configure entrypoint
 COPY --chown=nonroot:nonroot --chmod=0755 entrypoint run
 
+ENV NUT_API_PORT 8000
+# Add a health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:${NUT_API_PORT}/health || exit 1
+
 CMD ["./run"]
