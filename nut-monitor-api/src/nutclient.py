@@ -1,5 +1,8 @@
 import logging
 import nutsock
+from enum import Enum
+from typing import List, Callable, Dict, Union, Type, TypeVar
+import nutvartypes
 
 class NutClientError(Exception):
     """NUT (Network UPS Tools) client base exception."""
@@ -27,31 +30,85 @@ class NutClient:
         self.port = port
         self.timeout = timeout
 
-    def list_ups(self):
+    def session(self):
         """
-        List the UPSes on the NUT server.
+        Create a new NUT session.
 
         Returns:
-        - ups_dict: A dictionary of UPS names and descriptions.
+        - NutSession: A new NUT session.
         """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = "LIST UPS"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if raw_result != "BEGIN LIST UPS\n":
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-            raw_result = sock.read_until("END LIST UPS\n")
+        return NutSession(self.host, self.port, self.timeout)
 
-        ups_dict = {}
-        for line in raw_result.split("\n"):
-            if line.startswith("UPS "):
-                _, name, description = line.split(" ", 2)
-                description = description.strip('"')
-                ups_dict[name] = description
-        return ups_dict
+class GET(Enum):
+    """NUT (Network UPS Tools) GET sub-commands."""
+    VAR = "VAR"
+    TYPE = "TYPE"
+    DESC = "DESC"
+    NUMLOGINS = "NUMLOGINS"
+    UPSDESC = "UPSDESC"
+    CMDDESC = "CMDDESC"
 
-    def ups_num_logins(self, upsname):
+class LIST(Enum):
+    """NUT (Network UPS Tools) LIST sub-commands."""
+    UPS = "UPS"
+    VAR = "VAR"
+    RW = "RW"
+    ENUM = "ENUM"
+    RANGE = "RANGE"
+    CMD = "CMD"
+    CLIENT = "CLIENT"
+
+EXEC_LIST_T = TypeVar('EXEC_LIST_T', bound=Union[Dict[str, str], List[str]])
+
+class NutSession:
+    """NUT (Network UPS Tools) session."""
+
+    LOG = logging.getLogger(__name__)
+
+    def __init__(self, host: str="127.0.0.1", port: int=nutsock.DEF_PORT, timeout: float=nutsock.DEF_TIMEOUT):
+        """
+        Class initialization method.
+
+        Parameters:
+        - host (str): The hostname or IP address of the NUT server.
+        - port (int): The port number of the NUT server.
+        - timeout (int): The timeout in seconds for the socket connection.
+        """
+        self.sock = nutsock.NutSock(host, port, timeout)
+
+    def __enter__(self):
+        self.LOG.debug("Opening NUT connection")
+        self.sock.connect()
+        return self
+
+    def __exit__(self, *args):
+        self.LOG.debug("Closing NUT connection")
+        if self.sock:
+            self.sock.close()
+        self.sock = None
+
+    def exec_get(self, command: GET, *args: str) -> str:
+        """
+        Retrieve a single response from the NUT server.
+
+        Parameters:
+        - command (GET): The GET sub-command.
+        - args (str): The arguments for the GET sub-command.
+
+        Returns:
+        - str: The value of the variable.
+        """
+
+        sub_cmd = f"{command.value} {' '.join(args)}"
+        full_cmd = f"GET {sub_cmd}"
+        self.sock.cmd(full_cmd)
+        raw_response = self.sock.read_line()
+        expected_start = f"{sub_cmd} "
+        if not raw_response.startswith(expected_start):
+            raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {raw_response}")
+        return raw_response[len(expected_start):-1]
+
+    def num_logins(self, upsname: str) -> int:
         """
         Get the number of clients which have done LOGIN for a UPS.
 
@@ -59,23 +116,15 @@ class NutClient:
         - upsname (str): The name of the UPS.
 
         Returns:
-        - int: The number of clients which have done LOGIN for this UPS.
+        - int: The number of clients which have done LOGIN for this UPS. This is used by the upsmon in primary mode to determine how many clients are still connected when starting the shutdown process.
         """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = f"GET NUMLOGINS {upsname}"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if not raw_result.startswith(f"NUMLOGINS {upsname} "):
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-
         try:
-            value = int(raw_result.split(" ")[2])
+            value = int(self.exec_get(GET.NUMLOGINS, upsname))
             return value
         except (IndexError, ValueError):
-            raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
+            raise NutClientCmdError("Invalid response from 'GET NUMLOGINS' command")
 
-    def ups_desc(self, upsname):
+    def ups_desc(self, upsname: str) -> str:
         """
         Get the description of a UPS.
 
@@ -83,129 +132,14 @@ class NutClient:
         - upsname (str): The name of the UPS.
 
         Returns:
-        - str: The description of the UPS.
+        - str: The value of "desc=" from ups.conf for this UPS. If it is not set, upsd will return "Unavailable".
         """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = f"GET UPSDESC {upsname}"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if not raw_result.startswith(f"UPSDESC {upsname} "):
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-
         try:
-            value = raw_result.split('"')[1]
-            return value
+            return self.exec_get(GET.UPSDESC, upsname).strip('"')
         except IndexError:
-            raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
+            raise NutClientCmdError("Invalid response from 'GET UPSDESC' command")
 
-    def list_vars(self, upsname):
-        """
-        List the variables for a UPS on the NUT server.
-
-        Parameters:
-        - upsname (str): The name of the UPS.
-
-        Returns:
-        - str: The response from the NUT server.
-        """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = f"LIST VAR {upsname}"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if raw_result != f"BEGIN LIST VAR {upsname}\n":
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-            raw_result = sock.read_until(f"END LIST VAR {upsname}\n")
-
-        vars_dict = {}
-        for line in raw_result.split("\n"):
-            if line.startswith("VAR "):
-                _, _, var, value = line.split(" ", 3)
-                vars_dict[var] = value.strip('"').strip()
-        return vars_dict
-
-    def list_rw_vars(self, upsname):
-        """
-        List the read-write variables for a UPS on the NUT server.
-
-        Parameters:
-        - upsname (str): The name of the UPS.
-
-        Returns:
-        - str: The response from the NUT server.
-        """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = f"LIST RW {upsname}"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if raw_result != f"BEGIN LIST RW {upsname}\n":
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-            raw_result = sock.read_until(f"END LIST RW {upsname}\n")
-
-        vars_dict = {}
-        for line in raw_result.split("\n"):
-            if line.startswith("RW "):
-                _, _, var, value = line.split(" ", 3)
-                vars_dict[var] = value.strip('"').strip()
-        return vars_dict
-
-    def list_enum(self, upsname, var):
-        """
-        List the enumeration values for a variable for a UPS on the NUT server.
-
-        Parameters:
-        - upsname (str): The name of the UPS.
-        - var (str): The name of the variable.
-
-        Returns:
-        - str: The response from the NUT server.
-        """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = f"LIST ENUM {upsname} {var}"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if raw_result != f"BEGIN LIST ENUM {upsname} {var}\n":
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-            raw_result = sock.read_until(f"END LIST ENUM {upsname} {var}\n")
-
-        values = []
-        for line in raw_result.split("\n"):
-            if line.startswith("ENUM "):
-                _, _, _, value = line.split(" ", 3)
-                values.append(value.strip('"').strip())
-        return values
-
-    def list_range(self, upsname, var):
-        """
-        List the range values for a variable for a UPS on the NUT server.
-
-        Parameters:
-        - upsname (str): The name of the UPS.
-        - var (str): The name of the variable.
-
-        Returns:
-        - str: The response from the NUT server.
-        """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = f"LIST RANGE {upsname} {var}"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if raw_result != f"BEGIN LIST RANGE {upsname} {var}\n":
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-            raw_result = sock.read_until(f"END LIST RANGE {upsname} {var}\n")
-
-        list_range = []
-        for line in raw_result.split("\n"):
-            if line.startswith("RANGE "):
-                _, _, _, min, max = line.split(" ", 4)
-                list_range.append({"min": min, "max": max})
-        return list_range
-
-    def var_value(self, upsname, var):
+    def var_value(self, upsname: str, var: str) -> str:
         """
         Get the value of a variable for a UPS on the NUT server.
 
@@ -216,23 +150,14 @@ class NutClient:
         Returns:
         - str: The value of the variable.
         """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = f"GET VAR {upsname} {var}"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if not raw_result.startswith(f"VAR {upsname} {var} "):
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-
         try:
-            value = raw_result.split('"')[1]
-            return value
+            return self.exec_get(GET.VAR, upsname, var).strip('"')
         except IndexError:
-            raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
+            raise NutClientCmdError("Invalid response from 'GET VAR' command")
 
-    def var_type(self, upsname, var):
+    def var_type(self, upsname: str, var: str) -> List[nutvartypes.VarTypeEnum]:
         """
-        Get the type of a variable for a UPS on the NUT server.
+        Get the type of a variable for a UPS.
 
         Parameters:
         - upsname (str): The name of the UPS.
@@ -241,46 +166,139 @@ class NutClient:
         Returns:
         - str: The type of the variable.
         """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = f"GET TYPE {upsname} {var}"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if not raw_result.startswith(f"TYPE {upsname} {var} "):
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-
         try:
-            value = raw_result.split(" ")[3].strip()
-            return value
+            types: List[nutvartypes.VarTypeEnum] = []
+            for type in self.exec_get(GET.TYPE, upsname, var).split(" "):
+                pos = type.find(":")
+                if pos != -1:
+                    types.append(nutvartypes.StringType(max_length=int(type[pos+1:])))
+                else:
+                    types.append(nutvartypes.BaseType(type=nutvartypes.VarTypeEnum(type)))
+            return types
         except IndexError:
-            raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
+            raise NutClientCmdError("Invalid response from 'GET TYPE' command")
 
-    def var_desc(self, upsname, var):
+    def var_desc(self, upsname: str, var: str) -> str:
         """
-        Get the description of a variable for a UPS on the NUT server.
+        Get the description of a variable for a UPS.
 
         Parameters:
         - upsname (str): The name of the UPS.
         - var (str): The name of the variable.
 
         Returns:
-        - str: The description of the variable.
+        - str: The description that gives a brief explanation of the named variable. upsd may return "Unavailable" if the file which provides this description is not installed.
         """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = f"GET DESC {upsname} {var}"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if not raw_result.startswith(f"DESC {upsname} {var} "):
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-
         try:
-            value = raw_result.split('"')[1]
-            return value
+            return self.exec_get(GET.DESC, upsname, var).strip('"')
         except IndexError:
-            raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
+            raise NutClientCmdError("Invalid response from 'GET VAR' command")
 
-    def list_cmds(self, upsname):
+    def cmd_desc(self, upsname: str, cmd: str) -> str:
+        """
+        Get the description of a command for a UPS.
+
+        Parameters:
+        - upsname (str): The name of the UPS.
+        - cmd (str): The name of the command.
+
+        Returns:
+        - str: The description that gives a brief explanation of the named command. upsd may return "Unavailable" if the file which provides this description is not installed.
+        """
+        try:
+            return self.exec_get(GET.CMDDESC, upsname, cmd).strip('"')
+        except IndexError:
+            raise NutClientCmdError("Invalid response from 'GET CMDDESC' command")
+
+    def exec_list(self, command: LIST, result_type: Type[EXEC_LIST_T], converter: Callable[[str], Type[EXEC_LIST_T]], *args: str) -> EXEC_LIST_T:
+        """
+        Retrieve a list response from the NUT server.
+
+        Parameters:
+        - command (LIST): The LIST sub-command.
+        - result_type (Type[T]): The type of the result (dict or list).
+        - converter (Callable[[str], Type[T]]): Function to convert response lines into the desired format.
+        - args (str): The arguments for the LIST sub-command.
+
+        Returns:
+        - T: The response from the NUT server.
+        """
+        sub_cmd = f"{command.value} {' '.join(args)}".strip()
+        full_cmd = f"LIST {sub_cmd}"
+        self.sock.cmd(full_cmd)
+        head_response = self.sock.read_line()
+        if head_response != f"BEGIN LIST {sub_cmd}\n":
+            raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {head_response}")
+
+        data: EXEC_LIST_T
+        if result_type == dict:
+            data = {}
+        elif result_type == list:
+            data = []
+        else:
+            raise NutClientCmdError(f"Invalid type '{type}'")
+
+        while True:
+            response = self.sock.read_line()
+            if response == f"END LIST {sub_cmd}\n":
+                break
+            if not response.startswith(sub_cmd):
+                raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {response}")
+
+            val = converter(response[len(sub_cmd)+1:-1])
+            if result_type == dict:
+                data.update(val)
+            elif result_type == list:
+                data.append(val)
+
+        return data
+
+    def list_ups(self) -> dict:
+        """
+        List the UPSes on the NUT server.
+
+        Returns:
+        - ups_dict: A dictionary of UPS names and descriptions.
+        """
+        def parse(line: str) -> dict:
+            name, description = line.split(" ", 1)
+            return {name: description.strip('"').strip()}
+
+        return self.exec_list(LIST.UPS, dict, parse)
+
+    def list_vars(self, upsname: str) -> dict:
+        """
+        List the variables for a UPS on the NUT server.
+
+        Parameters:
+        - upsname (str): The name of the UPS.
+
+        Returns:
+        - str: The response from the NUT server.
+        """
+        def parse_var(line: str) -> dict:
+            var, value = line.split(" ", 1)
+            return {var: value.strip('"').strip()}
+
+        return self.exec_list(LIST.VAR, dict, parse_var, upsname)
+
+    def list_rw_vars(self, upsname: str) -> dict:
+        """
+        List the read-write variables for a UPS on the NUT server.
+
+        Parameters:
+        - upsname (str): The name of the UPS.
+
+        Returns:
+        - str: The response from the NUT server.
+        """
+        def parse_var(line: str) -> dict:
+            var, value = line.split(" ", 1)
+            return {var: value.strip('"').strip()}
+
+        return self.exec_list(LIST.RW, dict, parse_var, upsname)
+
+    def list_cmds(self, upsname: str) -> List[str]:
         """
         List the commands for a UPS on the NUT server.
 
@@ -290,43 +308,49 @@ class NutClient:
         Returns:
         - str: The response from the NUT server.
         """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = f"LIST CMD {upsname}"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if raw_result != f"BEGIN LIST CMD {upsname}\n":
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-            raw_result = sock.read_until(f"END LIST CMD {upsname}\n")
 
-        cmd_list = []
-        for line in raw_result.split("\n"):
-            if line.startswith("CMD "):
-                _, _, cmd = line.split(" ", 3)
-                cmd_list.append(cmd)
-        return cmd_list
+        return self.exec_list(LIST.CMD, list, lambda v: v, upsname)
 
-    def cmd_desc(self, upsname, cmd):
+    def list_enum(self, upsname: str, var: str) -> List[str]:
         """
-        Get the description of a command for a UPS on the NUT server.
+        List the enumeration values for a variable for a UPS on the NUT server.
 
         Parameters:
         - upsname (str): The name of the UPS.
-        - cmd (str): The name of the command.
+        - var (str): The name of the variable.
 
         Returns:
-        - str: The description of the command.
+        - str: The response from the NUT server.
         """
-        with nutsock.NutSock(self.host, self.port, self.timeout) as sock:
-            sock.connect()
-            command = f"GET CMDDESC {upsname} {cmd}"
-            sock.cmd(command)
-            raw_result = sock.read_until("\n")
-            if not raw_result.startswith(f"CMDDESC {upsname} {cmd} "):
-                raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
-
-        try:
-            value = raw_result.split('"')[1]
+        def parse(line: str) -> str:
+            _, value = line.split(" ", 1)
             return value
-        except IndexError:
-            raise NutClientCmdError(f"Invalid response from '{command}' comand: {raw_result}")
+
+        return self.exec_list(LIST.ENUM, list, parse, upsname, var)
+
+    def list_range(self, upsname: str, var: str) -> List[dict]:
+        """
+        List the range values for a variable for a UPS on the NUT server.
+
+        Parameters:
+        - upsname (str): The name of the UPS.
+        - var (str): The name of the variable.
+
+        Returns:
+        - str: The response from the NUT server.
+        """
+        def parse(line: str) -> dict:
+            min, max = line.split(" ", 1)
+            return {"min": min, "max": max}
+
+        return self.exec_list(LIST.RANGE, list, parse, upsname, var)
+
+    def list_clients(self, upsname: str) -> List[str]:
+        """
+        List the clients connected to the NUT server.
+
+        Returns:
+        - str: The response from the NUT server.
+        """
+
+        return self.exec_list(LIST.CLIENT, list, lambda v: v, upsname)

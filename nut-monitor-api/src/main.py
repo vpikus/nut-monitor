@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, request
+import json
 from nutclient import NutClient
 import logging.config
 import yaml
@@ -17,6 +18,7 @@ def setup_logging():
 setup_logging()
 
 app = Flask(__name__)
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
 # I don't like strict slashes xD
 app.url_map.strict_slashes = False
 
@@ -33,7 +35,7 @@ def load_config_and_initialize():
         nut[server_config["key"]] = NutClient(**filtered_config)
     return nut
 
-nut = load_config_and_initialize()
+nut: dict[str, NutClient] = load_config_and_initialize()
 
 @app.route('/health')
 def health():
@@ -45,65 +47,73 @@ def get_servers():
 
 @app.route('/servers/<servername>/ups', methods=['GET'])
 def list_ups(servername):
-    return jsonify(nut[servername].list_ups())
+    with nut[servername].session() as session:
+        return jsonify(session.list_ups())
 
 @app.route('/servers/<servername>/ups/<upsname>/logins', methods=['GET'])
 def ups_num_logins(servername, upsname):
-    value = nut[servername].ups_num_logins(upsname)
-    return jsonify({"value": value})
+    with nut[servername].session() as session:
+        return jsonify({"value": session.num_logins(upsname)})
 
-@app.route('/servers/<servername>/ups/<upsname>/description', methods=['GET'])
+@app.route('/servers/<servername>/ups/<upsname>/desc', methods=['GET'])
 def ups_description(servername, upsname):
-    value = nut[servername].ups_desc(upsname)
-    return jsonify({"value": value})
+    with nut[servername].session() as session:
+        return jsonify({"value": session.ups_desc(upsname)})
 
-@app.route('/servers/<servername>/ups/<upsname>/statistics', methods=['GET'])
+@app.route('/servers/<servername>/ups/<upsname>/stats', methods=['GET'])
 def ups_statistics(servername, upsname):
-    return jsonify(nut[servername].list_vars(upsname))
+    with nut[servername].session() as session:
+        return jsonify(session.list_vars(upsname))
 
-@app.route('/servers/<servername>/ups/<upsname>/variables', methods=['GET'])
+@app.route('/servers/<servername>/ups/<upsname>/vars', methods=['GET'])
 def list_vars(servername, upsname):
-    rw = request.args.get('rw', False, type=bool)
-    var_dict = nut[servername].list_vars(upsname) if not rw else nut[servername].list_rw_vars(upsname)
+    mode = request.args.get('type', type=str)
     vars = []
-    for var in var_dict:
-        vars.append({
-            "name": var,
-            "value": var_dict[var],
-            "description": nut[servername].var_desc(upsname, var),
-            "type": nut[servername].var_type(upsname, var)
-        })
+    with nut[servername].session() as session:
+        var_dict = session.list_vars(upsname) if mode != "rw" else session.list_rw_vars(upsname)
+        for var in var_dict:
+            vars.append({
+                "name": var,
+                "value": var_dict[var],
+                "description": session.var_desc(upsname, var),
+                "types": [it.serialize() for it in session.var_type(upsname, var)]
+            })
     return jsonify(vars)
 
-@app.route('/servers/<servername>/ups/<upsname>/variables/<variable>', methods=['GET'])
+
+@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>', methods=['GET'])
 def var(servername, upsname, variable):
-    value = nut[servername].var_value(upsname, variable)
-    description = nut[servername].var_desc(upsname, variable)
-    type = nut[servername].var_type(upsname, variable)
-    return jsonify({
-        "value": value,
-        "description": description,
-        "type": type
-    })
+    with nut[servername].session() as session:
+        return jsonify({
+            "value": session.var_value(upsname, variable),
+            "description": session.var_desc(upsname, variable),
+            "types": [it.serialize() for it in session.var_type(upsname, variable)]
+        })
 
-@app.route('/servers/<servername>/ups/<upsname>/variables/<variable>/enum', methods=['GET'])
+@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>/enum', methods=['GET'])
 def list_enum(servername, upsname, variable):
-    return jsonify(nut[servername].list_enum(upsname, variable))
+    with nut[servername].session() as session:
+        return jsonify(session.list_enum(upsname, variable))
 
-@app.route('/servers/<servername>/ups/<upsname>/variables/<variable>/range', methods=['GET'])
+@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>/range', methods=['GET'])
 def list_range(servername, upsname, variable):
-    return jsonify(nut[servername].list_range(upsname, variable))
+    with nut[servername].session() as session:
+        return jsonify(session.list_range(upsname, variable))
 
 @app.route('/servers/<servername>/ups/<upsname>/cmds', methods=['GET'])
 def list_cmds(servername, upsname):
-    return jsonify(nut[servername].list_cmds(upsname))
-
-@app.route('/servers/<servername>/ups/<upsname>/cmds/<cmd>', methods=['GET'])
-def cmd(servername, upsname, cmd):
-    description = nut[servername].cmd_desc(upsname, cmd)
-    return jsonify({
-        "description": description
-    })
+    cmds = []
+    with nut[servername].session() as session:
+        for cmd in session.list_cmds(upsname):
+            cmds.append({
+                "name": cmd,
+                "description": session.cmd_desc(upsname, cmd)
+            })
+    return jsonify(cmds)
 
 if __name__ == '__main__':
+    logging.getLogger().setLevel(logging.DEBUG)
+    for handler in logging.getLogger().handlers:
+        handler.setLevel(logging.DEBUG)
+
     app.run(host='127.0.0.1', port=8080)

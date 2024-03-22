@@ -1,8 +1,8 @@
 import socket
 import logging
 
-DEF_PORT = 3493
-DEF_TIMEOUT = 5
+DEF_PORT: int = 3493
+DEF_TIMEOUT: float = 5
 
 class NutSock:
     """NUT (Network UPS Tools) socket helper."""
@@ -32,6 +32,9 @@ class NutSock:
         return self
 
     def __exit__(self, *args):
+        self.close()
+
+    def close(self):
         self.LOG.debug("Closing NUT connection")
         if self.sock:
             self.sock.close()
@@ -63,7 +66,7 @@ class NutSock:
         self.LOG.debug(f"Sending command:\n{command}")
         self.sock.sendall(f"{command}\n".encode("utf-8"))
 
-    def read_until(self, untilText):
+    def read_until(self, untilText: str) -> str:
         """
         Read from the socket until the specified text is found. The method accumulates
         data read from the socket in a 'raw_queue'. Once the 'untilText' is encountered,
@@ -84,3 +87,12 @@ class NutSock:
         response = buf[:pos]
         self.LOG.debug(f"Received response:\n{response}")
         return response
+
+    def read_line(self) -> str:
+        """
+        Read a line from the socket.
+
+        Returns:
+        - str: The line read from the socket.
+        """
+        return self.read_until("\n")
