@@ -47,6 +47,7 @@ class GET(Enum):
     NUMLOGINS = "NUMLOGINS"
     UPSDESC = "UPSDESC"
     CMDDESC = "CMDDESC"
+    TRACKING = "TRACKING"
 
 class LIST(Enum):
     """NUT (Network UPS Tools) LIST sub-commands."""
@@ -57,6 +58,13 @@ class LIST(Enum):
     RANGE = "RANGE"
     CMD = "CMD"
     CLIENT = "CLIENT"
+
+class SET(Enum):
+    """NUT (Network UPS Tools) SET sub-commands."""
+    VAR = "VAR"
+    TRACKING = "TRACKING"
+    INSTCMD = "INSTCMD"
+
 
 EXEC_LIST_T = TypeVar('EXEC_LIST_T', bound=Union[Dict[str, str], List[str]])
 
@@ -87,7 +95,7 @@ class NutSession:
             self.sock.close()
         self.sock = None
 
-    def exec_get(self, command: GET, *args: str) -> str:
+    def __exec_get(self, command: GET, *args: str) -> str:
         """
         Retrieve a single response from the NUT server.
 
@@ -119,7 +127,7 @@ class NutSession:
         - int: The number of clients which have done LOGIN for this UPS. This is used by the upsmon in primary mode to determine how many clients are still connected when starting the shutdown process.
         """
         try:
-            value = int(self.exec_get(GET.NUMLOGINS, upsname))
+            value = int(self.__exec_get(GET.NUMLOGINS, upsname))
             return value
         except (IndexError, ValueError):
             raise NutClientCmdError("Invalid response from 'GET NUMLOGINS' command")
@@ -135,7 +143,7 @@ class NutSession:
         - str: The value of "desc=" from ups.conf for this UPS. If it is not set, upsd will return "Unavailable".
         """
         try:
-            return self.exec_get(GET.UPSDESC, upsname).strip('"')
+            return self.__exec_get(GET.UPSDESC, upsname).strip('"')
         except IndexError:
             raise NutClientCmdError("Invalid response from 'GET UPSDESC' command")
 
@@ -151,7 +159,7 @@ class NutSession:
         - str: The value of the variable.
         """
         try:
-            return self.exec_get(GET.VAR, upsname, var).strip('"')
+            return self.__exec_get(GET.VAR, upsname, var).strip('"')
         except IndexError:
             raise NutClientCmdError("Invalid response from 'GET VAR' command")
 
@@ -168,7 +176,7 @@ class NutSession:
         """
         try:
             types: List[nutvartypes.VarTypeEnum] = []
-            for type in self.exec_get(GET.TYPE, upsname, var).split(" "):
+            for type in self.__exec_get(GET.TYPE, upsname, var).split(" "):
                 pos = type.find(":")
                 if pos != -1:
                     types.append(nutvartypes.StringType(max_length=int(type[pos+1:])))
@@ -190,7 +198,7 @@ class NutSession:
         - str: The description that gives a brief explanation of the named variable. upsd may return "Unavailable" if the file which provides this description is not installed.
         """
         try:
-            return self.exec_get(GET.DESC, upsname, var).strip('"')
+            return self.__exec_get(GET.DESC, upsname, var).strip('"')
         except IndexError:
             raise NutClientCmdError("Invalid response from 'GET VAR' command")
 
@@ -206,11 +214,28 @@ class NutSession:
         - str: The description that gives a brief explanation of the named command. upsd may return "Unavailable" if the file which provides this description is not installed.
         """
         try:
-            return self.exec_get(GET.CMDDESC, upsname, cmd).strip('"')
+            return self.__exec_get(GET.CMDDESC, upsname, cmd).strip('"')
         except IndexError:
             raise NutClientCmdError("Invalid response from 'GET CMDDESC' command")
 
-    def exec_list(self, command: LIST, result_type: Type[EXEC_LIST_T], converter: Callable[[str], Type[EXEC_LIST_T]], *args: str) -> EXEC_LIST_T:
+    def tracking(self, id: str = None) -> str:
+        """
+        Get the tracking status of a variable for a UPS.
+
+        Parameters:
+        - upsname (str): The name of the UPS.
+        - id (str): The tracking ID.
+
+        Returns:
+        - str: The tracking status of the variable.
+        """
+        self.sock.cmd(f"GET {GET.TRACKING.value} {id}")
+        raw_response = self.sock.read_line()
+        if raw_response.startswith("ERR "):
+            raise NutClientCmdError(f"Invalid response from 'GET TRACKING' comand: {raw_response}")
+        return raw_response
+
+    def ___exec_list(self, command: LIST, result_type: Type[EXEC_LIST_T], converter: Callable[[str], Type[EXEC_LIST_T]], *args: str) -> EXEC_LIST_T:
         """
         Retrieve a list response from the NUT server.
 
@@ -264,7 +289,7 @@ class NutSession:
             name, description = line.split(" ", 1)
             return {name: description.strip('"').strip()}
 
-        return self.exec_list(LIST.UPS, dict, parse)
+        return self.___exec_list(LIST.UPS, dict, parse)
 
     def list_vars(self, upsname: str) -> dict:
         """
@@ -280,7 +305,7 @@ class NutSession:
             var, value = line.split(" ", 1)
             return {var: value.strip('"').strip()}
 
-        return self.exec_list(LIST.VAR, dict, parse_var, upsname)
+        return self.___exec_list(LIST.VAR, dict, parse_var, upsname)
 
     def list_rw_vars(self, upsname: str) -> dict:
         """
@@ -296,7 +321,7 @@ class NutSession:
             var, value = line.split(" ", 1)
             return {var: value.strip('"').strip()}
 
-        return self.exec_list(LIST.RW, dict, parse_var, upsname)
+        return self.___exec_list(LIST.RW, dict, parse_var, upsname)
 
     def list_cmds(self, upsname: str) -> List[str]:
         """
@@ -309,7 +334,7 @@ class NutSession:
         - str: The response from the NUT server.
         """
 
-        return self.exec_list(LIST.CMD, list, lambda v: v, upsname)
+        return self.___exec_list(LIST.CMD, list, lambda v: v, upsname)
 
     def list_enum(self, upsname: str, var: str) -> List[str]:
         """
@@ -326,7 +351,7 @@ class NutSession:
             _, value = line.split(" ", 1)
             return value
 
-        return self.exec_list(LIST.ENUM, list, parse, upsname, var)
+        return self.___exec_list(LIST.ENUM, list, parse, upsname, var)
 
     def list_range(self, upsname: str, var: str) -> List[dict]:
         """
@@ -343,7 +368,7 @@ class NutSession:
             min, max = line.split(" ", 1)
             return {"min": min, "max": max}
 
-        return self.exec_list(LIST.RANGE, list, parse, upsname, var)
+        return self.___exec_list(LIST.RANGE, list, parse, upsname, var)
 
     def list_clients(self, upsname: str) -> List[str]:
         """
@@ -353,4 +378,79 @@ class NutSession:
         - str: The response from the NUT server.
         """
 
-        return self.exec_list(LIST.CLIENT, list, lambda v: v, upsname)
+        return self.___exec_list(LIST.CLIENT, list, lambda v: v, upsname)
+
+    def __exec_set(self, command: SET, *args: str) -> str:
+        """
+        Execute a SET command on the NUT.
+
+        Parameters:
+        - command (SET): The SET sub-command.
+        - args (str): The arguments for the SET sub-command.
+
+        Returns:
+        - str: tracking ID. This is a unique identifier for the tracking operation.
+        """
+
+        full_cmd = f"SET {command.value} {' '.join(args)}"
+        self.sock.cmd(full_cmd)
+        raw_response = self.sock.read_line()
+        if raw_response.startswith("ERR "):
+            raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {raw_response}")
+
+        if raw_response.startswith("OK TRACKING "):
+            return raw_response[len("OK TRACKING "):-1]
+        elif raw_response =="OK\n":
+            return None
+        else:
+            raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {raw_response}")
+
+    def set_var(self, upsname: str, var: str, value: str) -> str:
+        """
+        Set the value of a variable for a UPS on the NUT server.
+
+        Parameters:
+        - upsname (str): The name of the UPS.
+        - var (str): The name of the variable.
+        - value (str): The value to set the variable to.
+
+        Returns:
+        - str: tracking ID. This is a unique identifier for the tracking operation.
+        """
+        return self.__exec_set(SET.VAR, upsname, var, f'"{value}"')
+
+    def tracking_on(self):
+        """
+        Turn on tracking for the NUT server.
+        """
+        return self.__exec_set(SET.TRACKING, "ON")
+
+    def tracking_off(self):
+        """
+        Turn off tracking for the NUT server.
+        """
+        return self.__exec_set(SET.TRACKING, "OFF")
+
+    def run_cmd(self, upsname: str, cmd: str, *args: str) -> str:
+        """
+        Execute an instant command on the NUT server.
+
+        Parameters:
+        - upsname (str): The name of the UPS.
+        - cmd (str): The name of the command.
+
+        Returns:
+        - str: tracking ID. This is a unique identifier for the tracking operation.
+        """
+        full_cmd = f"SET {SET.INSTCMD.value} {upsname} {cmd} {' '.join(args)}"
+        self.sock.cmd(full_cmd)
+        raw_response = self.sock.read_line()
+        if raw_response.startswith("ERR "):
+            raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {raw_response}")
+
+        if raw_response.startswith("OK TRACKING "):
+            return raw_response[len("OK TRACKING "):-1]
+        elif raw_response =="OK\n":
+            return None
+        else:
+            raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {raw_response}")

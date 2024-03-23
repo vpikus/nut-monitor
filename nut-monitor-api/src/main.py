@@ -45,20 +45,38 @@ def health():
 def get_servers():
     return jsonify(list(nut.keys()))
 
+@app.route('/servers/<servername>/tracking', methods=['GET'])
+def tracking(servername):
+    with nut[servername].session() as session:
+        return jsonify({"value": session.tracking()})
+
+@app.route('/servers/<servername>/tracking', methods=['PATCH'])
+def tracking_on_off(servername):
+    status = request.json['status'].upper()
+    with nut[servername].session() as session:
+        if status == "ON":
+            session.tracking_on()
+            return 200
+        elif status == "OFF":
+            session.tracking_off()
+            return 200
+        else:
+            return jsonify({"error": "Invalid status"}), 400
+
 @app.route('/servers/<servername>/ups', methods=['GET'])
 def list_ups(servername):
     with nut[servername].session() as session:
         return jsonify(session.list_ups())
 
-@app.route('/servers/<servername>/ups/<upsname>/logins', methods=['GET'])
-def ups_num_logins(servername, upsname):
+@app.route('/servers/<servername>/ups/<upsname>', methods=['GET'])
+def ups(servername, upsname):
     with nut[servername].session() as session:
-        return jsonify({"value": session.num_logins(upsname)})
-
-@app.route('/servers/<servername>/ups/<upsname>/desc', methods=['GET'])
-def ups_description(servername, upsname):
-    with nut[servername].session() as session:
-        return jsonify({"value": session.ups_desc(upsname)})
+        return jsonify({
+                "name": upsname,
+                "description": session.ups_desc(upsname),
+                "logins": session.num_logins(upsname),
+                "clients": session.list_clients(upsname),
+            })
 
 @app.route('/servers/<servername>/ups/<upsname>/stats', methods=['GET'])
 def ups_statistics(servername, upsname):
@@ -80,7 +98,6 @@ def list_vars(servername, upsname):
             })
     return jsonify(vars)
 
-
 @app.route('/servers/<servername>/ups/<upsname>/vars/<variable>', methods=['GET'])
 def var(servername, upsname, variable):
     with nut[servername].session() as session:
@@ -90,15 +107,23 @@ def var(servername, upsname, variable):
             "types": [it.serialize() for it in session.var_type(upsname, variable)]
         })
 
-@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>/enum', methods=['GET'])
-def list_enum(servername, upsname, variable):
+@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>', methods=['PATCH'])
+def set_var(servername, upsname, variable):
+    value = request.json['value']
     with nut[servername].session() as session:
-        return jsonify(session.list_enum(upsname, variable))
+        session.set_var(upsname, variable, value)
+        return 200
 
-@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>/range', methods=['GET'])
-def list_range(servername, upsname, variable):
-    with nut[servername].session() as session:
-        return jsonify(session.list_range(upsname, variable))
+#
+#@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>/enum', methods=['GET'])
+#def list_enum(servername, upsname, variable):
+#    with nut[servername].session() as session:
+#        return jsonify(session.list_enum(upsname, variable))
+
+#@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>/range', methods=['GET'])
+#def list_range(servername, upsname, variable):
+#    with nut[servername].session() as session:
+#        return jsonify(session.list_range(upsname, variable))
 
 @app.route('/servers/<servername>/ups/<upsname>/cmds', methods=['GET'])
 def list_cmds(servername, upsname):
@@ -110,6 +135,13 @@ def list_cmds(servername, upsname):
                 "description": session.cmd_desc(upsname, cmd)
             })
     return jsonify(cmds)
+
+@app.route('/servers/<servername>/ups/<upsname>/cmds/<cmd>', methods=['PATCH'])
+def run_cmd(servername, upsname, cmd):
+    value = request.json['value']
+    with nut[servername].session() as session:
+        session.run_cmd(upsname, cmd, value)
+        return 200
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.DEBUG)
