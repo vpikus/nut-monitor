@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 import json
 from nutclient import NutClient
 import logging.config
@@ -136,12 +136,17 @@ def list_cmds(servername, upsname):
             })
     return jsonify(cmds)
 
-@app.route('/servers/<servername>/ups/<upsname>/cmds/<cmd>', methods=['PATCH'])
-def run_cmd(servername, upsname, cmd):
-    value = request.json['value']
+@app.patch('/servers/<servername>/ups/<upsname>/cmds/<cmd>')
+def run_cmd(servername: str, upsname: str, cmd: str):
     with nut[servername].session() as session:
-        session.run_cmd(upsname, cmd, value)
-        return 200
+        auth = request.authorization
+        if auth:
+            session.auth(auth.username, auth.password)
+        if request.is_json and 'value' in request.json:
+            session.run_cmd(upsname, cmd, request.json['value'])
+        else:
+            session.run_cmd(upsname, cmd)
+        return Response(status=204)
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.DEBUG)

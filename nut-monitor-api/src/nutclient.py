@@ -92,8 +92,56 @@ class NutSession:
     def __exit__(self, *args):
         self.LOG.debug("Closing NUT connection")
         if self.sock:
+            self.logout()
             self.sock.close()
         self.sock = None
+
+    def auth(self, username: str, password: str):
+        """
+        Write the username and password to the NUT.
+
+        Parameters:
+        - username (str): The username to use for the login.
+        - password (str): The password to use for the login.
+        """
+        self.username(username)
+        self.password(password)
+
+    def login(self, upsname: str):
+        self.sock.cmd(f"LOGIN {upsname}")
+        raw_result = self.sock.read_line()
+        if raw_result.startswith("ERR ") or raw_result != "OK\n":
+            raise NutClientCmdError(f"Invalid response from 'LOGIN' command: {raw_result}")
+
+    def logout(self):
+        self.sock.cmd("LOGOUT")
+        raw_result = self.sock.read_line()
+        if not raw_result in ["Goodbye...\n", "OK Goodbye\n"]:
+            raise NutClientCmdError(f"Invalid response from 'LOGOUT' command: {raw_result}")
+
+    def username(self, username: str):
+        """
+        Set the username for the NUT session.
+
+        Parameters:
+        - username (str): The username to set.
+        """
+        self.sock.cmd(f"USERNAME {username}")
+        raw_result = self.sock.read_line()
+        if raw_result.startswith("ERR ") or raw_result != "OK\n":
+            raise NutClientCmdError(f"Invalid response from 'USERNAME' command: {raw_result}")
+
+    def password(self, password: str):
+        """
+        Set the password for the NUT session.
+
+        Parameters:
+        - password (str): The password to set.
+        """
+        self.sock.cmd(f"PASSWORD {password}")
+        raw_result = self.sock.read_line()
+        if raw_result.startswith("ERR ") or raw_result != "OK\n":
+            raise NutClientCmdError(f"Invalid response from 'PASSWORD' command: {raw_result}")
 
     def __exec_get(self, command: GET, *args: str) -> str:
         """
@@ -442,7 +490,9 @@ class NutSession:
         Returns:
         - str: tracking ID. This is a unique identifier for the tracking operation.
         """
-        full_cmd = f"SET {SET.INSTCMD.value} {upsname} {cmd} {' '.join(args)}"
+        full_cmd = f"{SET.INSTCMD.value} {upsname} {cmd}"
+        if args:
+            full_cmd += f' {" ".join(args)}'
         self.sock.cmd(full_cmd)
         raw_response = self.sock.read_line()
         if raw_response.startswith("ERR "):
