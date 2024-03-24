@@ -3,12 +3,18 @@ import nutsock
 from enum import Enum
 from typing import List, Callable, Dict, Union, Type, TypeVar
 import nutvartypes
+from dataclasses import dataclass
 
 class NutClientError(Exception):
     """NUT (Network UPS Tools) client base exception."""
 
 class NutClientCmdError(NutClientError):
     """NUT (Network UPS Tools) client CMD exception."""
+
+@dataclass(frozen=True)
+class NutAuthentication:
+    username: str
+    password: str
 
 class NutClient:
     """NUT (Network UPS Tools) client."""
@@ -30,14 +36,21 @@ class NutClient:
         self.port = port
         self.timeout = timeout
 
-    def session(self):
+    def session(self, authentication: NutAuthentication=None):
         """
         Create a new NUT session.
+
+        Parameters:
+        - authentication (NutAuthentication): The authentication credentials for the NUT server.
 
         Returns:
         - NutSession: A new NUT session.
         """
-        return NutSession(self.host, self.port, self.timeout)
+
+        return NutSession(host=self.host,
+                          port=self.port,
+                          authentication=authentication,
+                          timeout=self.timeout)
 
 class GET(Enum):
     """NUT (Network UPS Tools) GET sub-commands."""
@@ -47,7 +60,6 @@ class GET(Enum):
     NUMLOGINS = "NUMLOGINS"
     UPSDESC = "UPSDESC"
     CMDDESC = "CMDDESC"
-    TRACKING = "TRACKING"
 
 class LIST(Enum):
     """NUT (Network UPS Tools) LIST sub-commands."""
@@ -63,8 +75,6 @@ class SET(Enum):
     """NUT (Network UPS Tools) SET sub-commands."""
     VAR = "VAR"
     TRACKING = "TRACKING"
-    INSTCMD = "INSTCMD"
-
 
 EXEC_LIST_T = TypeVar('EXEC_LIST_T', bound=Union[Dict[str, str], List[str]])
 
@@ -73,20 +83,27 @@ class NutSession:
 
     LOG = logging.getLogger(__name__)
 
-    def __init__(self, host: str="127.0.0.1", port: int=nutsock.DEF_PORT, timeout: float=nutsock.DEF_TIMEOUT):
+    def __init__(self, host: str="127.0.0.1", port: int=nutsock.DEF_PORT, authentication: NutAuthentication = None, timeout: float=nutsock.DEF_TIMEOUT):
         """
         Class initialization method.
 
         Parameters:
         - host (str): The hostname or IP address of the NUT server.
         - port (int): The port number of the NUT server.
+        - authentication (NutAuthentication): The authentication credentials for the NUT server.
         - timeout (int): The timeout in seconds for the socket connection.
         """
         self.sock = nutsock.NutSock(host, port, timeout)
+        self.authentication = authentication
 
     def __enter__(self):
         self.LOG.debug("Opening NUT connection")
         self.sock.connect()
+        if self.authentication:
+            if self.authentication.username:
+                self.username(self.authentication.username)
+            if self.authentication.password:
+                self.password(self.authentication.password)
         return self
 
     def __exit__(self, *args):
@@ -277,7 +294,7 @@ class NutSession:
         Returns:
         - str: The tracking status of the variable.
         """
-        self.sock.cmd(f"GET {GET.TRACKING.value} {id}")
+        self.sock.cmd(f"GET TRACKING {id}")
         raw_response = self.sock.read_line()
         if raw_response.startswith("ERR "):
             raise NutClientCmdError(f"Invalid response from 'GET TRACKING' comand: {raw_response}")
@@ -490,7 +507,7 @@ class NutSession:
         Returns:
         - str: tracking ID. This is a unique identifier for the tracking operation.
         """
-        full_cmd = f"{SET.INSTCMD.value} {upsname} {cmd}"
+        full_cmd = f"INSTCMD {upsname} {cmd}"
         if args:
             full_cmd += f' {" ".join(args)}'
         self.sock.cmd(full_cmd)

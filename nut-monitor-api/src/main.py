@@ -1,8 +1,11 @@
-from flask import Flask, jsonify, request, Response
-import json
-from nutclient import NutClient
+from flask import Flask, jsonify, request, Response, abort
+from werkzeug.routing import BaseConverter
+from werkzeug.exceptions import HTTPException
+from nutclient import NutClient, NutAuthentication
 import logging.config
 import yaml
+from http import HTTPStatus
+from functools import wraps
 import os
 
 HOME_DIR = os.environ.get('NUT_API_HOME', os.path.dirname(os.path.abspath(__file__)))
@@ -17,8 +20,34 @@ def setup_logging():
 
 setup_logging()
 
+def nut_auth(f):
+    """
+    Decorator to handle basic authentication for NUT API routes.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        auth = request.authorization
+        nut_auth: NutAuthentication = None
+        if auth:
+            nut_auth = NutAuthentication(username=auth.username, password=auth.password)
+        kwargs['auth'] = nut_auth
+        # Pass the nut_auth model to the route function
+        return f(*args, **kwargs)
+    return decorated_function
+
+class NutServerConverter(BaseConverter):
+    def to_python(self, servername) -> NutClient:
+        if servername not in nut:
+            abort(404, description="Server not found")
+        server = nut[servername]
+        return server
+
+    def to_url(self, servername):
+        return super().to_url(servername)
+
 app = Flask(__name__)
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
+app.url_map.converters['servername'] = NutServerConverter
 # I don't like strict slashes xD
 app.url_map.strict_slashes = False
 
@@ -39,38 +68,42 @@ nut: dict[str, NutClient] = load_config_and_initialize()
 
 @app.route('/health')
 def health():
-    return 'OK', 200
+    return 'OK', HTTPStatus.OK
 
 @app.route('/servers', methods=['GET'])
 def get_servers():
     return jsonify(list(nut.keys()))
 
-@app.route('/servers/<servername>/tracking', methods=['GET'])
-def tracking(servername):
-    with nut[servername].session() as session:
+@app.get('/servers/<servername:server>/tracking')
+@nut_auth
+def tracking(server: NutClient, auth: NutAuthentication):
+    with server.session(auth) as session:
         return jsonify({"value": session.tracking()})
 
-@app.route('/servers/<servername>/tracking', methods=['PATCH'])
-def tracking_on_off(servername):
+@app.patch('/servers/<servername:server>/tracking')
+@nut_auth
+def tracking_on_off(server: NutClient, auth: NutAuthentication):
     status = request.json['status'].upper()
-    with nut[servername].session() as session:
+    with server.session(auth) as session:
         if status == "ON":
             session.tracking_on()
-            return 200
+            return HTTPStatus.OK
         elif status == "OFF":
             session.tracking_off()
-            return 200
+            return HTTPStatus.OK
         else:
-            return jsonify({"error": "Invalid status"}), 400
+            return jsonify({"error": "Invalid status"}), HTTPStatus.BAD_REQUEST
 
-@app.route('/servers/<servername>/ups', methods=['GET'])
-def list_ups(servername):
-    with nut[servername].session() as session:
+@app.get('/servers/<servername:server>/ups')
+@nut_auth
+def list_ups(server: NutClient, auth: NutAuthentication):
+    with server.session(auth) as session:
         return jsonify(session.list_ups())
 
-@app.route('/servers/<servername>/ups/<upsname>', methods=['GET'])
-def ups(servername, upsname):
-    with nut[servername].session() as session:
+@app.get('/servers/<servername:server>/ups/<upsname>')
+@nut_auth
+def ups(server: NutClient, auth: NutAuthentication, upsname: str):
+    with server.session(auth) as session:
         return jsonify({
                 "name": upsname,
                 "description": session.ups_desc(upsname),
@@ -78,16 +111,18 @@ def ups(servername, upsname):
                 "clients": session.list_clients(upsname),
             })
 
-@app.route('/servers/<servername>/ups/<upsname>/stats', methods=['GET'])
-def ups_statistics(servername, upsname):
-    with nut[servername].session() as session:
+@app.get('/servers/<servername:server>/ups/<upsname>/stats')
+@nut_auth
+def ups_statistics(server: NutClient, auth: NutAuthentication, upsname: str):
+    with server.session(auth) as session:
         return jsonify(session.list_vars(upsname))
 
-@app.route('/servers/<servername>/ups/<upsname>/vars', methods=['GET'])
-def list_vars(servername, upsname):
+@app.get('/servers/<servername:server>/ups/<upsname>/vars')
+@nut_auth
+def list_vars(server: NutClient, auth: NutAuthentication, upsname: str):
     mode = request.args.get('type', type=str)
     vars = []
-    with nut[servername].session() as session:
+    with server.session(auth) as session:
         var_dict = session.list_vars(upsname) if mode != "rw" else session.list_rw_vars(upsname)
         for var in var_dict:
             vars.append({
@@ -98,37 +133,40 @@ def list_vars(servername, upsname):
             })
     return jsonify(vars)
 
-@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>', methods=['GET'])
-def var(servername, upsname, variable):
-    with nut[servername].session() as session:
+@app.get('/servers/<servername:server>/ups/<upsname>/vars/<variable>')
+@nut_auth
+def var(server: NutClient, auth: NutAuthentication, upsname: str, variable: str):
+    with server.session(auth) as session:
         return jsonify({
             "value": session.var_value(upsname, variable),
             "description": session.var_desc(upsname, variable),
             "types": [it.serialize() for it in session.var_type(upsname, variable)]
         })
 
-@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>', methods=['PATCH'])
-def set_var(servername, upsname, variable):
+@app.patch('/servers/<servername:server>/ups/<upsname>/vars/<variable>')
+@nut_auth
+def set_var(server: NutClient, auth: NutAuthentication, upsname: str, variable: str):
     value = request.json['value']
-    with nut[servername].session() as session:
+    with server.session(auth) as session:
         session.set_var(upsname, variable, value)
-        return 200
+        return Response(status=HTTPStatus.NO_CONTENT)
 
 #
-#@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>/enum', methods=['GET'])
+#@app.route('/servers/<servername:server>/ups/<upsname>/vars/<variable>/enum', methods=['GET'])
 #def list_enum(servername, upsname, variable):
-#    with nut[servername].session() as session:
+#    with server.session(auth) as session:
 #        return jsonify(session.list_enum(upsname, variable))
 
-#@app.route('/servers/<servername>/ups/<upsname>/vars/<variable>/range', methods=['GET'])
+#@app.route('/servers/<servername:server>/ups/<upsname>/vars/<variable>/range', methods=['GET'])
 #def list_range(servername, upsname, variable):
-#    with nut[servername].session() as session:
+#    with server.session(auth) as session:
 #        return jsonify(session.list_range(upsname, variable))
 
-@app.route('/servers/<servername>/ups/<upsname>/cmds', methods=['GET'])
-def list_cmds(servername, upsname):
+@app.get('/servers/<servername:server>/ups/<upsname>/cmds')
+@nut_auth
+def list_cmds(server: NutClient, auth: NutAuthentication, upsname: str):
     cmds = []
-    with nut[servername].session() as session:
+    with server.session(auth) as session:
         for cmd in session.list_cmds(upsname):
             cmds.append({
                 "name": cmd,
@@ -136,17 +174,27 @@ def list_cmds(servername, upsname):
             })
     return jsonify(cmds)
 
-@app.patch('/servers/<servername>/ups/<upsname>/cmds/<cmd>')
-def run_cmd(servername: str, upsname: str, cmd: str):
-    with nut[servername].session() as session:
-        auth = request.authorization
-        if auth:
-            session.auth(auth.username, auth.password)
-        if request.is_json and 'value' in request.json:
-            session.run_cmd(upsname, cmd, request.json['value'])
-        else:
-            session.run_cmd(upsname, cmd)
-        return Response(status=204)
+@app.patch('/servers/<servername:server>/ups/<upsname>/cmds/<cmd>')
+@nut_auth
+def run_cmd(server: NutClient, auth: NutAuthentication, upsname: str, cmd: str):
+    with server.session(auth) as session:
+        value = request.json.get('value') if request.is_json else None
+        session.run_cmd(upsname, cmd, *(value,) if value is not None else ())
+        return Response(status=HTTPStatus.NO_CONTENT)
+
+@app.errorhandler(HTTPException)
+def handle_exception(e):
+    """Return JSON instead of HTML for HTTP errors."""
+    # Start with the correct headers and status code from the error
+    response = e.get_response()
+    # Replace the body with JSON
+    response.data = jsonify({
+        "code": e.code,
+        "name": e.name,
+        "description": e.description,
+    }).data
+    response.content_type = "application/json"
+    return response
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.DEBUG)
