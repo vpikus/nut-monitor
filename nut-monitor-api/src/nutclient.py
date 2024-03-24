@@ -1,7 +1,7 @@
 import logging
 import nutsock
 from enum import Enum
-from typing import List, Callable, Dict, Union, Type, TypeVar
+from typing import List, Callable
 import nutvartypes
 from dataclasses import dataclass
 
@@ -75,8 +75,6 @@ class SET(Enum):
     """NUT (Network UPS Tools) SET sub-commands."""
     VAR = "VAR"
     TRACKING = "TRACKING"
-
-EXEC_LIST_T = TypeVar('EXEC_LIST_T', bound=Union[Dict[str, str], List[str]])
 
 class NutSession:
     """NUT (Network UPS Tools) session."""
@@ -300,18 +298,14 @@ class NutSession:
             raise NutClientCmdError(f"Invalid response from 'GET TRACKING' comand: {raw_response}")
         return raw_response
 
-    def ___exec_list(self, command: LIST, result_type: Type[EXEC_LIST_T], converter: Callable[[str], Type[EXEC_LIST_T]], *args: str) -> EXEC_LIST_T:
+    def ___exec_list(self, command: LIST, consumer: Callable[[str], None], *args: str) -> None:
         """
         Retrieve a list response from the NUT server.
 
         Parameters:
         - command (LIST): The LIST sub-command.
-        - result_type (Type[T]): The type of the result (dict or list).
-        - converter (Callable[[str], Type[T]]): Function to convert response lines into the desired format.
+        - consumer (Callable[[str], None]): The consumer function to process each line of the response.
         - args (str): The arguments for the LIST sub-command.
-
-        Returns:
-        - T: The response from the NUT server.
         """
         sub_cmd = f"{command.value} {' '.join(args)}".strip()
         full_cmd = f"LIST {sub_cmd}"
@@ -320,28 +314,13 @@ class NutSession:
         if head_response != f"BEGIN LIST {sub_cmd}\n":
             raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {head_response}")
 
-        data: EXEC_LIST_T
-        if result_type == dict:
-            data = {}
-        elif result_type == list:
-            data = []
-        else:
-            raise NutClientCmdError(f"Invalid type '{type}'")
-
         while True:
             response = self.sock.read_line()
             if response == f"END LIST {sub_cmd}\n":
                 break
             if not response.startswith(sub_cmd):
                 raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {response}")
-
-            val = converter(response[len(sub_cmd)+1:-1])
-            if result_type == dict:
-                data.update(val)
-            elif result_type == list:
-                data.append(val)
-
-        return data
+            consumer(response[len(sub_cmd)+1:-1])
 
     def list_ups(self) -> dict:
         """
@@ -350,11 +329,13 @@ class NutSession:
         Returns:
         - ups_dict: A dictionary of UPS names and descriptions.
         """
-        def parse(line: str) -> dict:
+        ups_dict = {}
+        def accept(line: str):
             name, description = line.split(" ", 1)
-            return {name: description.strip('"').strip()}
+            ups_dict.update({name: description.strip('"').strip()})
 
-        return self.___exec_list(LIST.UPS, dict, parse)
+        self.___exec_list(LIST.UPS, accept)
+        return ups_dict
 
     def list_vars(self, upsname: str) -> dict:
         """
@@ -366,11 +347,13 @@ class NutSession:
         Returns:
         - str: The response from the NUT server.
         """
-        def parse_var(line: str) -> dict:
+        vars_dict = {}
+        def accept(line: str) -> dict:
             var, value = line.split(" ", 1)
-            return {var: value.strip('"').strip()}
+            vars_dict.update({var: value.strip('"').strip()})
 
-        return self.___exec_list(LIST.VAR, dict, parse_var, upsname)
+        self.___exec_list(LIST.VAR, accept, upsname)
+        return vars_dict
 
     def list_rw_vars(self, upsname: str) -> dict:
         """
@@ -382,11 +365,13 @@ class NutSession:
         Returns:
         - str: The response from the NUT server.
         """
-        def parse_var(line: str) -> dict:
+        vars_dict = {}
+        def accept(line: str) -> dict:
             var, value = line.split(" ", 1)
-            return {var: value.strip('"').strip()}
+            vars_dict.update({var: value.strip('"').strip()})
 
-        return self.___exec_list(LIST.RW, dict, parse_var, upsname)
+        self.___exec_list(LIST.RW, accept, upsname)
+        return vars_dict
 
     def list_cmds(self, upsname: str) -> List[str]:
         """
@@ -398,8 +383,12 @@ class NutSession:
         Returns:
         - str: The response from the NUT server.
         """
+        cmds = []
+        def accept(line: str):
+            cmds.append(line)
 
-        return self.___exec_list(LIST.CMD, list, lambda v: v, upsname)
+        self.___exec_list(LIST.CMD, accept, upsname)
+        return cmds
 
     def list_enum(self, upsname: str, var: str) -> List[str]:
         """
@@ -412,11 +401,12 @@ class NutSession:
         Returns:
         - str: The response from the NUT server.
         """
-        def parse(line: str) -> str:
+        emums = []
+        def accept(line: str):
             _, value = line.split(" ", 1)
-            return value
+            emums.append(value)
 
-        return self.___exec_list(LIST.ENUM, list, parse, upsname, var)
+        return self.___exec_list(LIST.ENUM, accept, upsname, var)
 
     def list_range(self, upsname: str, var: str) -> List[dict]:
         """
@@ -429,11 +419,13 @@ class NutSession:
         Returns:
         - str: The response from the NUT server.
         """
-        def parse(line: str) -> dict:
+        ranges: List[dict] = []
+        def accept(line: str) -> dict:
             min, max = line.split(" ", 1)
-            return {"min": min, "max": max}
+            ranges.append({"min": min, "max": max})
 
-        return self.___exec_list(LIST.RANGE, list, parse, upsname, var)
+        self.___exec_list(LIST.RANGE, accept, upsname, var)
+        return ranges
 
     def list_clients(self, upsname: str) -> List[str]:
         """
@@ -442,8 +434,12 @@ class NutSession:
         Returns:
         - str: The response from the NUT server.
         """
+        clients = []
+        def accept(line: str):
+            clients.append(line)
 
-        return self.___exec_list(LIST.CLIENT, list, lambda v: v, upsname)
+        self.___exec_list(LIST.CLIENT, accept, upsname)
+        return clients
 
     def __exec_set(self, command: SET, *args: str) -> str:
         """
