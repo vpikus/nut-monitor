@@ -1,8 +1,9 @@
-import socket
 import logging
+import socket
 
 DEF_PORT: int = 3493
 DEF_TIMEOUT: float = 5
+
 
 class NutSock:
     """NUT (Network UPS Tools) socket helper."""

@@ -1,27 +1,37 @@
 import logging
-import nutsock
-from enum import Enum
-from typing import List, Callable
-import nutvartypes
 from dataclasses import dataclass
+from enum import Enum
+from typing import Callable, List
+
+import nutsock
+import nutvartypes
+
 
 class NutClientError(Exception):
     """NUT (Network UPS Tools) client base exception."""
 
+
 class NutClientCmdError(NutClientError):
     """NUT (Network UPS Tools) client CMD exception."""
+
 
 @dataclass(frozen=True)
 class NutAuthentication:
     username: str
     password: str
 
+
 class NutClient:
     """NUT (Network UPS Tools) client."""
 
     LOG = logging.getLogger(__name__)
 
-    def __init__(self, host="127.0.0.1", port=nutsock.DEF_PORT, timeout=nutsock.DEF_TIMEOUT):
+    def __init__(
+        self,
+        host="127.0.0.1",
+        port=nutsock.DEF_PORT,
+        timeout=nutsock.DEF_TIMEOUT,
+    ):
         """
         Class initialization method.
 
@@ -36,7 +46,7 @@ class NutClient:
         self.port = port
         self.timeout = timeout
 
-    def session(self, authentication: NutAuthentication=None):
+    def session(self, authentication: NutAuthentication = None):
         """
         Create a new NUT session.
 
@@ -47,13 +57,17 @@ class NutClient:
         - NutSession: A new NUT session.
         """
 
-        return NutSession(host=self.host,
-                          port=self.port,
-                          authentication=authentication,
-                          timeout=self.timeout)
+        return NutSession(
+            host=self.host,
+            port=self.port,
+            authentication=authentication,
+            timeout=self.timeout,
+        )
+
 
 class GET(Enum):
     """NUT (Network UPS Tools) GET sub-commands."""
+
     VAR = "VAR"
     TYPE = "TYPE"
     DESC = "DESC"
@@ -61,8 +75,10 @@ class GET(Enum):
     UPSDESC = "UPSDESC"
     CMDDESC = "CMDDESC"
 
+
 class LIST(Enum):
     """NUT (Network UPS Tools) LIST sub-commands."""
+
     UPS = "UPS"
     VAR = "VAR"
     RW = "RW"
@@ -71,17 +87,26 @@ class LIST(Enum):
     CMD = "CMD"
     CLIENT = "CLIENT"
 
+
 class SET(Enum):
     """NUT (Network UPS Tools) SET sub-commands."""
+
     VAR = "VAR"
     TRACKING = "TRACKING"
+
 
 class NutSession:
     """NUT (Network UPS Tools) session."""
 
     LOG = logging.getLogger(__name__)
 
-    def __init__(self, host: str="127.0.0.1", port: int=nutsock.DEF_PORT, authentication: NutAuthentication = None, timeout: float=nutsock.DEF_TIMEOUT):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = nutsock.DEF_PORT,
+        authentication: NutAuthentication = None,
+        timeout: float = nutsock.DEF_TIMEOUT,
+    ):
         """
         Class initialization method.
 
@@ -177,7 +202,7 @@ class NutSession:
         expected_start = f"{sub_cmd} "
         if not raw_response.startswith(expected_start):
             raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {raw_response}")
-        return raw_response[len(expected_start):-1]
+        return raw_response[len(expected_start) : -1]
 
     def num_logins(self, upsname: str) -> int:
         """
@@ -242,7 +267,7 @@ class NutSession:
             for type in self.__exec_get(GET.TYPE, upsname, var).split(" "):
                 pos = type.find(":")
                 if pos != -1:
-                    types.append(nutvartypes.StringType(max_length=int(type[pos+1:])))
+                    types.append(nutvartypes.StringType(max_length=int(type[pos + 1 :])))
                 else:
                     types.append(nutvartypes.BaseType(type=nutvartypes.VarTypeEnum(type)))
             return types
@@ -320,7 +345,7 @@ class NutSession:
                 break
             if not response.startswith(sub_cmd):
                 raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {response}")
-            consumer(response[len(sub_cmd)+1:-1])
+            consumer(response[len(sub_cmd) + 1 : -1])
 
     def list_ups(self) -> dict:
         """
@@ -330,6 +355,7 @@ class NutSession:
         - ups_dict: A dictionary of UPS names and descriptions.
         """
         ups_dict = {}
+
         def accept(line: str):
             name, description = line.split(" ", 1)
             ups_dict.update({name: description.strip('"').strip()})
@@ -348,6 +374,7 @@ class NutSession:
         - str: The response from the NUT server.
         """
         vars_dict = {}
+
         def accept(line: str) -> dict:
             var, value = line.split(" ", 1)
             vars_dict.update({var: value.strip('"').strip()})
@@ -366,6 +393,7 @@ class NutSession:
         - str: The response from the NUT server.
         """
         vars_dict = {}
+
         def accept(line: str) -> dict:
             var, value = line.split(" ", 1)
             vars_dict.update({var: value.strip('"').strip()})
@@ -384,6 +412,7 @@ class NutSession:
         - str: The response from the NUT server.
         """
         cmds = []
+
         def accept(line: str):
             cmds.append(line)
 
@@ -402,6 +431,7 @@ class NutSession:
         - str: The response from the NUT server.
         """
         emums = []
+
         def accept(line: str):
             _, value = line.split(" ", 1)
             emums.append(value)
@@ -420,6 +450,7 @@ class NutSession:
         - str: The response from the NUT server.
         """
         ranges: List[dict] = []
+
         def accept(line: str) -> dict:
             min, max = line.split(" ", 1)
             ranges.append({"min": min, "max": max})
@@ -435,6 +466,7 @@ class NutSession:
         - str: The response from the NUT server.
         """
         clients = []
+
         def accept(line: str):
             clients.append(line)
 
@@ -460,8 +492,8 @@ class NutSession:
             raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {raw_response}")
 
         if raw_response.startswith("OK TRACKING "):
-            return raw_response[len("OK TRACKING "):-1]
-        elif raw_response =="OK\n":
+            return raw_response[len("OK TRACKING ") : -1]
+        elif raw_response == "OK\n":
             return None
         else:
             raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {raw_response}")
@@ -512,8 +544,8 @@ class NutSession:
             raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {raw_response}")
 
         if raw_response.startswith("OK TRACKING "):
-            return raw_response[len("OK TRACKING "):-1]
-        elif raw_response =="OK\n":
+            return raw_response[len("OK TRACKING ") : -1]
+        elif raw_response == "OK\n":
             return None
         else:
             raise NutClientCmdError(f"Invalid response from '{full_cmd}' comand: {raw_response}")

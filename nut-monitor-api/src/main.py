@@ -1,12 +1,13 @@
-from flask import Flask, jsonify, request, Response, abort
-from werkzeug.routing import BaseConverter
-from werkzeug.exceptions import HTTPException
-from nutclient import NutClient, NutAuthentication
 import logging.config
-import yaml
-from http import HTTPStatus
-from functools import wraps
 import os
+from functools import wraps
+from http import HTTPStatus
+
+import yaml
+from flask import Flask, Response, abort, jsonify, request
+from nutclient import NutAuthentication, NutClient
+from werkzeug.exceptions import HTTPException
+from werkzeug.routing import BaseConverter
 
 HOME_DIR = os.environ.get('NUT_API_HOME', os.path.dirname(os.path.abspath(__file__)))
 CONFIG_DIR = f"{HOME_DIR}/config"
