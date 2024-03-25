@@ -357,7 +357,7 @@ if __name__ == "__main__":
             with nut["rpi5"].session() as session:
                 ups_list = session.list_ups()
                 for upsname in ups_list:
-                    fetch_data(session, f"{upsname}@rpi5")
+                    fetch_data(session, f"{upsname}@{nut["rpi5"].host}")
         except Exception as e:
             logging.exception(f"Failed to fetch data: {e}")
         time.sleep(5)
