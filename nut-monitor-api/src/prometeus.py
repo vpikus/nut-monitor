@@ -204,60 +204,68 @@ gauge_metric_config = {
 # - input.current.status
 
 UPS_STATUS_STATES = [
-    "OL",
-    "OB",
-    "LB",
-    "HB",
-    "RB",
-    "CHRG",
-    "DISCHRG",
-    "BYPASS",
-    "CAL",
-    "OFF",
-    "OVER",
-    "TRIM",
-    "BOOST",
-    "FSD"
+    "OFF", # UPS is offline and is not supplying power to the load
+    "OL", # On line (mains is present)
+    "OB", # On battery (mains is not present)
+    "LB", # Low battery
+    "HB", # High battery
+    "RB", # Battery needs to be replaced
+    "BYPASS", # UPS bypass circuit is active -- no battery protection is available
+    "CAL", # UPS is currently performing a runtime calibration (on battery)
+    "OVER", # UPS is overloaded
+    "TRIM", # UPS is trimming incoming voltage (called "buck" in some hardware)
+    "BOOST", # UPS is boosting incoming voltage
+    "FSD" # UPS is on forced shutdown
 ]
 
-UPS_BEEPER_STATUS_STATES = [
-    "enabled",
-    "disabled",
-    "muted"
-]
+CHARGER_STATUS_LEGACY_TO_NEW = {
+    "CHRG": "charging",
+    "DISCHRG": "discharging"
+}
+
+BATTERY_CARGE_STAT_NAME = "battery.charge.status"
 
 enum_metric_config = {
     "ups.beeper.status": {
         "description": "UPS beeper status (enabled, disabled or muted)",
-        "states": UPS_BEEPER_STATUS_STATES.copy()
+        "states": [
+            "disabled",
+            "enabled",
+            "muted" # Temporarily muted
+        ]
     },
     "ups.status": {
+        "default": "OFF",
         "description": "UPS status",
         "states": UPS_STATUS_STATES.copy()
     },
     "battery.charger.status": {
+        "default": "resting",
         "description": "Battery charger status",
-        "states": ["charging", "discharging", "floating", "resting"] + UPS_STATUS_STATES.copy()
+        "states": [
+            "resting", # the battery is fully charged, and not charging nor discharging
+            "charging", # battery is charging
+            "discharging", # battery is discharging
+            "floating", # battery has completed its charge cycle, and waiting to go to resting mode
+            ] + UPS_STATUS_STATES.copy()
     }
 }
 
 def init_metrics():
-    for varname in gauge_metric_config:
+    for varname, config in gauge_metric_config.items():
         metric_key = varname.replace(".", "_")
         logging.debug(f"Initializing metric {METRIC_NAME_PREFIX}_{metric_key}")
-        service_metrics[varname] = Gauge(f"{METRIC_NAME_PREFIX}_{metric_key}", gauge_metric_config[varname]["description"], ["ups"])
+        service_metrics[varname] = Gauge(f"{METRIC_NAME_PREFIX}_{metric_key}", config["description"], ["ups"])
 
-    for varname in enum_metric_config:
+    for varname, config in enum_metric_config.items():
         metric_key = varname.replace(".", "_")
         logging.debug(f"Initializing metric {METRIC_NAME_PREFIX}_{metric_key}")
-        metric_conf = enum_metric_config[varname]
-        service_metrics[varname] = Enum(f"{METRIC_NAME_PREFIX}_{metric_key}", metric_conf["description"], ["ups"], states=metric_conf["states"])
+        service_metrics[varname] = Enum(f"{METRIC_NAME_PREFIX}_{metric_key}", config["description"], ["ups"], states=config["states"])
 
 def fetch_data(session: NutSession, ups: str):
     upsname, _ = ups.split("@")
     statistics = session.list_vars(upsname)
-    for varname in gauge_metric_config:
-        config = gauge_metric_config[varname]
+    for varname, config in gauge_metric_config.items():
         value = statistics.get(varname)
         if value is not None:
             gauge = service_metrics[varname]
@@ -270,19 +278,20 @@ def fetch_data(session: NutSession, ups: str):
             except Exception:
                 logging.exception(f"Failed to set value for {varname} with value '{value}'")
 
-    for varname in enum_metric_config:
-        value = statistics.get(varname)
+    for varname, config in enum_metric_config.items():
+        value = statistics.get(varname, config.get("default"))
         if value is not None:
             try:
                 enum = service_metrics[varname]
                 if varname == "ups.status":
                     ups_status = value
-                    battery_status = None
+                    battery_status = None if "battery.charger.status" in statistics else enum_metric_config["battery.charger.status"]["default"]
+                    # Support for legacy battery status. Newer versions of NUT have separate status for UPS and battery charger
                     if value.find(" ") != -1:
-                        ups_status, battery_status = value.split(" ")
+                        ups_status, legacy_battery_status = value.split(" ")
+                        battery_status = CHARGER_STATUS_LEGACY_TO_NEW.get(legacy_battery_status, legacy_battery_status)
                     enum.labels(ups=ups).state(ups_status)
-                    if battery_status is not None:
-                        service_metrics["battery.charger.status"].labels(ups=ups).state(battery_status)
+                    service_metrics["battery.charger.status"].labels(ups=ups).state(battery_status)
                 else:
                     enum.labels(ups=ups).state(value)
             except Exception as e:
