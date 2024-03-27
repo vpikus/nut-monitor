@@ -279,6 +279,8 @@ def fetch_data(session: NutSession, ups: str):
                 logging.exception(f"Failed to set value for {varname} with value '{value}'")
 
     for varname, config in enum_metric_config.items():
+        if varname not in statistics:
+            continue
         value = statistics.get(varname, config.get("default"))
         if value is not None:
             try:
