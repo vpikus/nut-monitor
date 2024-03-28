@@ -12,6 +12,7 @@ from prometheus_client import Enum, Gauge, Info, start_http_server
 HOME_DIR = os.environ.get('NUT_PROMETEUS_HOME', os.path.dirname(os.path.abspath(__file__)))
 CONFIG_DIR = f"{HOME_DIR}/config"
 LOG_DIR = os.environ.get('NUT_PROMETEUS_LOG_DIR', f"{HOME_DIR}/logs")
+NUT_PROMETEUS_PORT = int(os.environ.get('NUT_PROMETEUS_PORT', 8000))
 
 def setup_logging():
     with open(f"{CONFIG_DIR}/logging.yml", 'r') as file:
@@ -35,10 +36,18 @@ def load_config_and_initialize():
     return nut
 
 METRIC_NAME_PREFIX = "upsmon"
+UPS_ALARM_KEY = "ups.alarm"
+UPS_ALARM_NO_STATE = 0
+UPS_ALARM_YES_STATE = 1
+BTR_CHRG_STAT_KEY = "battery.charger.status"
+UPS_STATUS_KEY = "ups.status"
+UPS_POWER_KEY = "ups.power"
 
 nut: dict[str, NutClient] = load_config_and_initialize()
 
-service_metrics: Dict[str, Union[Gauge, Enum, Info]] = {}
+service_metrics: Dict[str, Union[Gauge, Enum, Info]] = {
+    UPS_ALARM_KEY: Gauge(f"{METRIC_NAME_PREFIX}_ups_alarm", "UPS alarm status", ["ups", "alarm"])
+}
 
 gauge_metric_config = {
     "device.uptime": {
@@ -181,7 +190,7 @@ gauge_metric_config = {
         "description": "Nominal output frequency (Hz)",
         "value-type": float
     },
-    "ups.power": {
+    UPS_POWER_KEY: {
         "description": "Current value of apparent power (Volt-Amps)",
         "value-type": float
     },
@@ -203,10 +212,7 @@ gauge_metric_config = {
 # - input.frequency.status
 # - input.current.status
 
-UPS_STATUS_STATES = [
-    "OFF", # UPS is offline and is not supplying power to the load
-    "OL", # On line (mains is present)
-    "OB", # On battery (mains is not present)
+UPS_ALARM_STATES = [
     "LB", # Low battery
     "HB", # High battery
     "RB", # Battery needs to be replaced
@@ -223,8 +229,6 @@ CHARGER_STATUS_LEGACY_TO_NEW = {
     "DISCHRG": "discharging"
 }
 
-BATTERY_CARGE_STAT_NAME = "battery.charge.status"
-
 enum_metric_config = {
     "ups.beeper.status": {
         "description": "UPS beeper status (enabled, disabled or muted)",
@@ -234,20 +238,22 @@ enum_metric_config = {
             "muted" # Temporarily muted
         ]
     },
-    "ups.status": {
-        "default": "OFF",
+    UPS_STATUS_KEY: {
         "description": "UPS status",
-        "states": UPS_STATUS_STATES.copy()
+        "states": [
+            "OFF", # UPS is offline and is not supplying power to the load
+            "OL", # On line (mains is present)
+            "OB" # On battery (mains is not present)
+        ]
     },
-    "battery.charger.status": {
-        "default": "resting",
+    BTR_CHRG_STAT_KEY: {
         "description": "Battery charger status",
         "states": [
             "resting", # the battery is fully charged, and not charging nor discharging
             "charging", # battery is charging
             "discharging", # battery is discharging
             "floating", # battery has completed its charge cycle, and waiting to go to resting mode
-            ] + UPS_STATUS_STATES.copy()
+        ]
     }
 }
 
@@ -262,41 +268,77 @@ def init_metrics():
         logging.debug(f"Initializing metric {METRIC_NAME_PREFIX}_{metric_key}")
         service_metrics[varname] = Enum(f"{METRIC_NAME_PREFIX}_{metric_key}", config["description"], ["ups"], states=config["states"])
 
+def unwrap_legacy_ups_status(statistics: Dict[str, str]):
+    original_status = statistics[UPS_STATUS_KEY]
+    parts = original_status.split(" ")
+
+    if parts[0] == "ALARM":
+        alarm_type = parts[-1]  # Assuming the last part is the alarm type
+        if UPS_ALARM_KEY in statistics:
+            statistics[UPS_ALARM_KEY] += " " + alarm_type
+            logging.warn(f"Ambiguous alarm status. Probably it's not configured correctly:\n\t{UPS_STATUS_KEY} = {original_status}\n\t{UPS_ALARM_KEY} = {statistics[UPS_ALARM_KEY]}")
+        else:
+            statistics[UPS_ALARM_KEY] = alarm_type
+        parts = parts[1:-1]  # Remove the ALARM part and the alarm type
+
+    if parts:
+        statistics[UPS_STATUS_KEY] = parts[0]
+    else:
+        logging.error("Missing UPS status after processing ALARM. Check UPS status configuration.")
+        return
+
+    if len(parts) > 1:
+        legacy_battery_status = parts[1]
+        battery_status = CHARGER_STATUS_LEGACY_TO_NEW.get(legacy_battery_status, "resting")
+        if BTR_CHRG_STAT_KEY in statistics and statistics[BTR_CHRG_STAT_KEY] != battery_status:
+            logging.warning(f"Ambiguous battery charger status. The system might not be configured correctly:\n\t{UPS_STATUS_KEY} = {original_status}\n\t{BTR_CHRG_STAT_KEY} = {statistics[BTR_CHRG_STAT_KEY]}")
+        statistics[BTR_CHRG_STAT_KEY] = battery_status
+    elif BTR_CHRG_STAT_KEY not in statistics:
+        # If the battery status is not present, assume it's resting
+        statistics[BTR_CHRG_STAT_KEY] = "resting"
+
+def calculate_ups_power(statistics: Dict[str, str]):
+    if UPS_POWER_KEY in statistics:
+        return
+
+    try:
+        load_pct = int(statistics.get("ups.load"))
+        real_power_nominal = int(statistics.get("ups.realpower.nominal"))
+        power = real_power_nominal * load_pct / 100
+    except ValueError:
+        power = 0
+
+    statistics[UPS_POWER_KEY] = str(power)
+
 def fetch_data(session: NutSession, ups: str):
     upsname, _ = ups.split("@")
     statistics = session.list_vars(upsname)
+    calculate_ups_power(statistics)
+
     for varname, config in gauge_metric_config.items():
         value = statistics.get(varname)
         if value is not None:
-            gauge = service_metrics[varname]
             try:
                 value = config["value-type"](value)
-                gauge.labels(ups=ups).set(value)
-                if varname == "ups.load" and "ups.power" not in statistics:
-                    real_power_nominal = int(statistics.get("ups.realpower.nominal"))
-                    service_metrics["ups.power"].labels(ups=ups).set(real_power_nominal / 100 * value)
+                service_metrics[varname].labels(ups=ups).set(value)
             except Exception:
                 logging.exception(f"Failed to set value for {varname} with value '{value}'")
 
+    unwrap_legacy_ups_status(statistics)
+
+    try:
+        alarm = statistics.get(UPS_ALARM_KEY)
+        alarm_state = UPS_ALARM_NO_STATE if alarm is None else UPS_ALARM_YES_STATE
+        service_metrics[UPS_ALARM_KEY].labels(ups=ups, alarm=alarm).set(alarm_state)
+    except Exception:
+        logging.exception(f"Failed to set value for {UPS_ALARM_KEY} with value '{alarm}'")
+
     for varname, config in enum_metric_config.items():
-        if varname not in statistics:
-            continue
-        value = statistics.get(varname, config.get("default"))
+        value = statistics.get(varname)
         if value is not None:
             try:
-                enum = service_metrics[varname]
-                if varname == "ups.status":
-                    ups_status = value
-                    battery_status = None if "battery.charger.status" in statistics else enum_metric_config["battery.charger.status"]["default"]
-                    # Support for legacy battery status. Newer versions of NUT have separate status for UPS and battery charger
-                    if value.find(" ") != -1:
-                        ups_status, legacy_battery_status = value.split(" ")
-                        battery_status = CHARGER_STATUS_LEGACY_TO_NEW.get(legacy_battery_status, legacy_battery_status)
-                    enum.labels(ups=ups).state(ups_status)
-                    service_metrics["battery.charger.status"].labels(ups=ups).state(battery_status)
-                else:
-                    enum.labels(ups=ups).state(value)
-            except Exception as e:
+                service_metrics[varname].labels(ups=ups).state(value)
+            except Exception:
                 logging.exception(f"Failed to set value for {varname} with value '{value}'")
 
 def shutdown(signum, frame):
@@ -348,7 +390,7 @@ if __name__ == "__main__":
     for handler in logging.getLogger().handlers:
         handler.setLevel(logging.INFO)
 
-    start_http_server(int(os.environ.get('NUT_PROMETEUS_PORT', 8000)))
+    start_http_server(NUT_PROMETEUS_PORT)
 
     ups_info = Info(f"{METRIC_NAME_PREFIX}_ups", "UPS metadata", ["ups"])
     service_metrics["ups.info"] = ups_info
