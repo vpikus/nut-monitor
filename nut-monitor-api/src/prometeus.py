@@ -45,9 +45,7 @@ UPS_POWER_KEY = "ups.power"
 
 nut: dict[str, NutClient] = load_config_and_initialize()
 
-service_metrics: Dict[str, Union[Gauge, Enum, Info]] = {
-    UPS_ALARM_KEY: Gauge(f"{METRIC_NAME_PREFIX}_ups_alarm", "UPS alarm status", ["ups", "alarm"])
-}
+service_metrics: Dict[str, Union[Gauge, Enum, Info]] = {}
 
 gauge_metric_config = {
     "device.uptime": {
@@ -212,18 +210,6 @@ gauge_metric_config = {
 # - input.frequency.status
 # - input.current.status
 
-UPS_ALARM_STATES = [
-    "LB", # Low battery
-    "HB", # High battery
-    "RB", # Battery needs to be replaced
-    "BYPASS", # UPS bypass circuit is active -- no battery protection is available
-    "CAL", # UPS is currently performing a runtime calibration (on battery)
-    "OVER", # UPS is overloaded
-    "TRIM", # UPS is trimming incoming voltage (called "buck" in some hardware)
-    "BOOST", # UPS is boosting incoming voltage
-    "FSD" # UPS is on forced shutdown
-]
-
 CHARGER_STATUS_LEGACY_TO_NEW = {
     "CHRG": "charging",
     "DISCHRG": "discharging"
@@ -253,6 +239,20 @@ enum_metric_config = {
             "charging", # battery is charging
             "discharging", # battery is discharging
             "floating", # battery has completed its charge cycle, and waiting to go to resting mode
+        ]
+    },
+    UPS_ALARM_KEY: {
+        "description": "UPS alarm status",
+        "states": [
+            "LB", # Low battery
+            "HB", # High battery
+            "RB", # Battery needs to be replaced
+            "BYPASS", # UPS bypass circuit is active -- no battery protection is available
+            "CAL", # UPS is currently performing a runtime calibration (on battery)
+            "OVER", # UPS is overloaded
+            "TRIM", # UPS is trimming incoming voltage (called "buck" in some hardware)
+            "BOOST", # UPS is boosting incoming voltage
+            "FSD" # UPS is on forced shutdown
         ]
     }
 }
@@ -310,40 +310,52 @@ def calculate_ups_power(statistics: Dict[str, str]):
 
     statistics[UPS_POWER_KEY] = str(power)
 
+def safe_remove_metric(key, ups):
+    if key in service_metrics:
+        try:
+            service_metrics[key].remove(ups)
+        except Exception:
+            pass
+
 def fetch_data(session: NutSession, ups: str):
     upsname, _ = ups.split("@")
     statistics = session.list_vars(upsname)
     calculate_ups_power(statistics)
+    unwrap_legacy_ups_status(statistics)
 
     for varname, config in gauge_metric_config.items():
         value = statistics.get(varname)
-        if value is not None:
+        if value is not None and value != "":
             try:
                 value = config["value-type"](value)
                 service_metrics[varname].labels(ups=ups).set(value)
             except Exception:
                 logging.exception(f"Failed to set value for {varname} with value '{value}'")
-
-    unwrap_legacy_ups_status(statistics)
-
-    try:
-        alarm = statistics.get(UPS_ALARM_KEY)
-        alarm_state = UPS_ALARM_NO_STATE if alarm is None else UPS_ALARM_YES_STATE
-        service_metrics[UPS_ALARM_KEY].labels(ups=ups, alarm=alarm).set(alarm_state)
-    except Exception:
-        logging.exception(f"Failed to set value for {UPS_ALARM_KEY} with value '{alarm}'")
+        else:
+            safe_remove_metric(varname, ups)
 
     for varname, config in enum_metric_config.items():
         value = statistics.get(varname)
-        if value is not None:
+        if value is not None and value != "":
             try:
                 service_metrics[varname].labels(ups=ups).state(value)
             except Exception:
                 logging.exception(f"Failed to set value for {varname} with value '{value}'")
+        else:
+            safe_remove_metric(varname, ups)
 
-def shutdown(signum, frame):
-    logging.getLogger().info("Shutting down...")
-    sys.exit(0)
+def fetch_all_data():
+    """Fetch all data for all UPSes."""
+
+    with nut["rpi5"].session() as session:
+        for upsname in session.list_ups():
+            ups = f"{upsname}@{nut["rpi5"].host}"
+            try:
+                fetch_data(session, ups)
+            except Exception:
+                logging.exception(f"Failed to fetch data for {ups}")
+                for key in service_metrics:
+                    safe_remove_metric(key, ups)
 
 UPS_INFO_VARS = [
     "device.description",
@@ -382,6 +394,27 @@ def get_veriables(varnames: List[str], vars_dict: Dict[str, str]) -> Dict[str, s
                 transformed_dict[transformed_key] = vars_dict[varname]
     return transformed_dict
 
+# Should be called after initializing the metrics. And must not be cleared.
+service_info_metrics: Dict[str, Info] = {}
+
+def initialize_ups():
+    ups_info = Info(f"{METRIC_NAME_PREFIX}_ups", "UPS metadata", ["ups"])
+    service_info_metrics["ups.info"] = ups_info
+    ups_driver_info = Info(f"{METRIC_NAME_PREFIX}_ups_driver", "UPS driver metadata", ["ups"])
+    service_info_metrics["ups.driver.info"] = ups_driver_info
+
+    with nut["rpi5"].session() as session:
+        for upsname in session.list_ups():
+            ups = f"{upsname}@{nut["rpi5"].host}"
+            ups_vars = session.list_vars(upsname)
+            ups_info.labels(ups = ups).info(get_veriables(UPS_INFO_VARS, ups_vars))
+            ups_driver_info.labels(ups = ups).info(get_veriables(UPS_DRIVER_INFO_VARS, ups_vars))
+            init_metrics()
+
+def shutdown(signum, frame):
+    logging.getLogger().info("Shutting down...")
+    sys.exit(0)
+
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
@@ -392,25 +425,18 @@ if __name__ == "__main__":
 
     start_http_server(NUT_PROMETEUS_PORT)
 
-    ups_info = Info(f"{METRIC_NAME_PREFIX}_ups", "UPS metadata", ["ups"])
-    service_metrics["ups.info"] = ups_info
-    ups_driver_info = Info(f"{METRIC_NAME_PREFIX}_ups_driver", "UPS driver metadata", ["ups"])
-    service_metrics["ups.driver.info"] = ups_driver_info
-
-    with nut["rpi5"].session() as session:
-        ups_list = session.list_ups()
-        for upsname in ups_list:
-            ups_vars = session.list_vars(upsname)
-            ups_info.labels(ups = f"{upsname}@{nut["rpi5"].host}").info(get_veriables(UPS_INFO_VARS, ups_vars))
-            ups_driver_info.labels(ups = f"{upsname}@{nut["rpi5"].host}").info(get_veriables(UPS_DRIVER_INFO_VARS, ups_vars))
-            init_metrics()
+    initialize_ups()
 
     while True:
         try:
-            with nut["rpi5"].session() as session:
-                ups_list = session.list_ups()
-                for upsname in ups_list:
-                    fetch_data(session, f"{upsname}@{nut["rpi5"].host}")
-        except Exception as e:
-            logging.exception(f"Failed to fetch data: {e}")
+            fetch_all_data()
+        except Exception:
+            logging.exception("Failed to establish session")
+            for key in service_metrics:
+                try:
+                    service_metrics[key].clear()
+                except Exception:
+                    logging.exception(f"Failed to clear metric {key}")
+            time.sleep(30) # Wait for a while before trying to
+            continue
         time.sleep(5)
