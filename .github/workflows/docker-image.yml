@@ -38,7 +38,7 @@ jobs:
       - name: Build the Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./nut-monitor-api
+          context: ./
           push: ${{ github.event_name != 'pull_request' }}
           platforms: linux/amd64,linux/arm64
           file: ./nut-monitor-api/Dockerfile
@@ -74,8 +74,8 @@ jobs:
       - name: Build the Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./nut-monitor-api
+          context: ./
           push: ${{ github.event_name != 'pull_request' }}
           platforms: linux/amd64,linux/arm64
-          file: ./nut-monitor-api/Dockerfile_PromExporter
+          file: ./nut-monitor-prometheus/Dockerfile
           tags: ${{ steps.meta.outputs.tags }}
