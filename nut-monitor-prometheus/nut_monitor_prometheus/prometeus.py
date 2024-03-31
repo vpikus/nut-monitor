@@ -6,10 +6,10 @@ import time
 from typing import Dict, List, Union
 
 import yaml
-from nutclient import NutClient, NutSession
+from nut_monitor_client import NutClient, NutSession
 from prometheus_client import Enum, Gauge, Info, start_http_server
 
-HOME_DIR = os.environ.get('NUT_PROMETEUS_HOME', os.path.dirname(os.path.abspath(__file__)))
+HOME_DIR = os.environ.get('NUT_PROMETEUS_HOME', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CONFIG_DIR = f"{HOME_DIR}/config"
 LOG_DIR = os.environ.get('NUT_PROMETEUS_LOG_DIR', f"{HOME_DIR}/logs")
 NUT_PROMETEUS_PORT = int(os.environ.get('NUT_PROMETEUS_PORT', 8000))

@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "nut-monitor-client"
+version = "1.0"
+description = "Nut Monitor Client"
+readme = "README.md"
+authors = ["Vladyslav Pikus <pvladislavs@gmail.com>"]
+packages = [
+    { include = "nut_monitor_client"}
+]
+
+
+[tool.poetry.dependencies]
+python = "^3.12"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
