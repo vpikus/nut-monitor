@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "nut-monitor-api"
+version = "1.0"
+description = "Nut Monitor REST API"
+authors = ["Vladyslav Pikus <pvladislavs@gmail.com>"]
+package-mode = false
+packages = [
+    { include = "nut_monitor_api"}
+]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+Flask = "^3.0.2"
+PyYAML = "^6.0.1"
+gunicorn = "^21.2.0"
+nut-monitor-client = {path = "../nut-monitor-client", develop = false}
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

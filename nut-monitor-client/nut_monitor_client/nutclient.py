@@ -3,8 +3,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, List
 
-import nutsock
-import nutvartypes
+from . import nutsock, nutvartypes
 
 
 class NutClientError(Exception):

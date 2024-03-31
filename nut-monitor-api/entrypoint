@@ -1,5 +1,0 @@
-#!/bin/sh
-
-source $VIRTUAL_ENV/bin/activate
-
-exec gunicorn -c gunicorn.py main:app
