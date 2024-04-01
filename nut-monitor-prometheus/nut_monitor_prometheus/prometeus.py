@@ -257,6 +257,15 @@ enum_metric_config = {
     }
 }
 
+info_metric_config = {
+    "input.transfer.reason": {
+        "description": "Reason for last transfer to battery",
+    },
+    "ups.test.result": {
+        "description": "Result of last self-test",
+    }
+}
+
 def init_metrics():
     for varname, config in gauge_metric_config.items():
         metric_key = varname.replace(".", "_")
@@ -267,6 +276,11 @@ def init_metrics():
         metric_key = varname.replace(".", "_")
         logging.debug(f"Initializing metric {METRIC_NAME_PREFIX}_{metric_key}")
         service_metrics[varname] = Enum(f"{METRIC_NAME_PREFIX}_{metric_key}", config["description"], ["ups"], states=config["states"])
+
+    for varname, config in info_metric_config.items():
+        metric_key = varname.replace(".", "_")
+        logging.debug(f"Initializing metric {METRIC_NAME_PREFIX}_{metric_key}")
+        service_metrics[varname] = Info(f"{METRIC_NAME_PREFIX}_{metric_key}", config["description"], ["ups"])
 
 def unwrap_legacy_ups_status(statistics: Dict[str, str]):
     original_status = statistics[UPS_STATUS_KEY]
@@ -325,7 +339,7 @@ def fetch_data(session: NutSession, ups: str):
 
     for varname, config in gauge_metric_config.items():
         value = statistics.get(varname)
-        if value is not None and value != "":
+        if value:
             try:
                 value = config["value-type"](value)
                 service_metrics[varname].labels(ups=ups).set(value)
@@ -336,9 +350,19 @@ def fetch_data(session: NutSession, ups: str):
 
     for varname, config in enum_metric_config.items():
         value = statistics.get(varname)
-        if value is not None and value != "":
+        if value:
             try:
                 service_metrics[varname].labels(ups=ups).state(value)
+            except Exception:
+                logging.exception(f"Failed to set value for {varname} with value '{value}'")
+        else:
+            safe_remove_metric(varname, ups)
+
+    for varname, config in info_metric_config.items():
+        value = statistics.get(varname)
+        if value:
+            try:
+                service_metrics[varname].labels(ups=ups).info({varname.replace('.', '_'): value})
             except Exception:
                 logging.exception(f"Failed to set value for {varname} with value '{value}'")
         else:
