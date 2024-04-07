@@ -1,3 +1,4 @@
+import enum
 import logging.config
 import os
 import signal
@@ -7,6 +8,7 @@ from typing import Dict, List, Union
 
 import yaml
 from nut_monitor_client import NutClient, NutSession
+from nut_monitor_client.exceptions import NutClientConnectError
 from prometheus_client import Enum, Gauge, Info, start_http_server
 
 HOME_DIR = os.environ.get('NUT_PROMETEUS_HOME', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -435,6 +437,22 @@ def initialize_ups():
             ups_driver_info.labels(ups = ups).info(get_veriables(UPS_DRIVER_INFO_VARS, ups_vars))
             init_metrics()
 
+def clear_metrics():
+    for key in service_metrics:
+        try:
+            service_metrics[key].clear()
+        except Exception:
+            logging.exception(f"Failed to clear metric {key}")
+
+class State(enum.Enum):
+
+    def __init__(self, delay):
+        self.delay = delay
+
+    OK = 5
+    CONNECTION_ERROR = 60
+    FATAL_ERROR = 30
+
 def shutdown(signum, frame):
     logging.getLogger().info("Shutting down...")
     sys.exit(0)
@@ -451,16 +469,21 @@ if __name__ == "__main__":
 
     initialize_ups()
 
+    state: State = State.OK
     while True:
         try:
             fetch_all_data()
+            if state == State.CONNECTION_ERROR:
+                logging.info("Connection reestablished")
+            state = State.OK
+        except NutClientConnectError as e:
+            if state != State.CONNECTION_ERROR:
+                logging.error(f"Failed to establish session: {e}")
+                state = State.CONNECTION_ERROR
         except Exception:
-            logging.exception("Failed to establish session")
-            for key in service_metrics:
-                try:
-                    service_metrics[key].clear()
-                except Exception:
-                    logging.exception(f"Failed to clear metric {key}")
-            time.sleep(30) # Wait for a while before trying to
-            continue
-        time.sleep(5)
+            state = State.FATAL_ERROR
+            logging.exception("An unexpected error occurred")
+
+        if state != State.OK:
+            clear_metrics()
+        time.sleep(state.delay)

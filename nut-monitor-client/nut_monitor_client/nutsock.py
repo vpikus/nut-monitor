@@ -1,5 +1,8 @@
+import errno
 import logging
 import socket
+
+from .exceptions import NutClientConnectError
 
 DEF_PORT: int = 3493
 DEF_TIMEOUT: float = 5
@@ -50,9 +53,22 @@ class NutSock:
         - self: The NutSock object.
         """
         self.LOG.debug("Connecting to NUT server")
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect((self.host, self.port))
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(self.timeout)
+            self.sock.connect((self.host, self.port))
+        except socket.gaierror as e:
+            if e.errno == socket.EAI_NONAME:
+                raise NutClientConnectError(
+                    f"Connection to NUT server {self.host}:{self.port} failed. Unknown host."
+                ) from e
+            raise
+        except OSError as e:
+            if e.errno == errno.EHOSTUNREACH:
+                raise NutClientConnectError(
+                    f"Connection to NUT server {self.host}:{self.port} failed. Host is unreachable."
+                ) from e
+            raise
 
     def cmd(self, command):
         """

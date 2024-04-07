@@ -4,14 +4,7 @@ from enum import Enum
 from typing import Callable, List
 
 from . import nutsock, nutvartypes
-
-
-class NutClientError(Exception):
-    """NUT (Network UPS Tools) client base exception."""
-
-
-class NutClientCmdError(NutClientError):
-    """NUT (Network UPS Tools) client CMD exception."""
+from .exceptions import NutClientCmdError
 
 
 @dataclass(frozen=True)

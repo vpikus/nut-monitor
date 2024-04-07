@@ -6,6 +6,7 @@ from http import HTTPStatus
 import yaml
 from flask import Flask, Response, abort, jsonify, request
 from nut_monitor_client import NutAuthentication, NutClient
+from nut_monitor_client.exceptions import NutClientConnectError
 from werkzeug.exceptions import HTTPException
 from werkzeug.routing import BaseConverter
 
@@ -195,6 +196,16 @@ def handle_exception(e):
         "description": e.description,
     }).data
     response.content_type = "application/json"
+    return response
+
+@app.errorhandler(NutClientConnectError)
+def handle_nut_client_connect_error(e: NutClientConnectError):
+    response = jsonify({
+        "code": HTTPStatus.SERVICE_UNAVAILABLE,
+        "name": "Service Unavailable",
+        "description": str(e),
+    })
+    response.status_code = HTTPStatus.SERVICE_UNAVAILABLE
     return response
 
 if __name__ == '__main__':
