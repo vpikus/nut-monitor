@@ -38,12 +38,12 @@ def load_config_and_initialize():
     return nut
 
 METRIC_NAME_PREFIX = "upsmon"
-UPS_ALARM_KEY = "ups.alarm"
-UPS_ALARM_NO_STATE = 0
-UPS_ALARM_YES_STATE = 1
-BTR_CHRG_STAT_KEY = "battery.charger.status"
 UPS_STATUS_KEY = "ups.status"
-UPS_POWER_KEY = "ups.power"
+
+CALC_UPS_STATUS_KEY = "calc.status.ups" # extracted from ups.status
+CALC_ALARM_STATUS_KEY = "calc.status.alarm" # extracted from ups.status
+CALC_BATTERY_STATUS_KEY = "calc.status.battery" # extracted from ups.status
+CALC_REALPOWER_KEY = "calc.ups.realpower" # calculated from ups.load and ups.realpower.nominal
 
 nut: dict[str, NutClient] = load_config_and_initialize()
 
@@ -190,7 +190,7 @@ gauge_metric_config = {
         "description": "Nominal output frequency (Hz)",
         "value-type": float
     },
-    UPS_POWER_KEY: {
+    "ups.power": {
         "description": "Current value of apparent power (Volt-Amps)",
         "value-type": float
     },
@@ -202,6 +202,10 @@ gauge_metric_config = {
         "description": "Current value of real power (Watts)",
         "value-type": int
     },
+    CALC_REALPOWER_KEY: {
+        "description": "[Calculated] Current value of real power (Watts)",
+        "value-type": float
+    },
     "ups.realpower.nominal": {
         "description": "Nominal value of real power (Watts)",
         "value-type": int
@@ -212,11 +216,6 @@ gauge_metric_config = {
 # - input.frequency.status
 # - input.current.status
 
-CHARGER_STATUS_LEGACY_TO_NEW = {
-    "CHRG": "charging",
-    "DISCHRG": "discharging"
-}
-
 enum_metric_config = {
     "ups.beeper.status": {
         "description": "UPS beeper status (enabled, disabled or muted)",
@@ -226,25 +225,33 @@ enum_metric_config = {
             "muted" # Temporarily muted
         ]
     },
-    UPS_STATUS_KEY: {
-        "description": "UPS status",
+    CALC_UPS_STATUS_KEY: {
+        "description": "UPS status (extracted from ups.status)",
         "states": [
             "OFF", # UPS is offline and is not supplying power to the load
             "OL", # On line (mains is present)
             "OB" # On battery (mains is not present)
         ]
     },
-    BTR_CHRG_STAT_KEY: {
+    "battery.charger.status": {
         "description": "Battery charger status",
         "states": [
             "resting", # the battery is fully charged, and not charging nor discharging
             "charging", # battery is charging
             "discharging", # battery is discharging
-            "floating", # battery has completed its charge cycle, and waiting to go to resting mode
+            "floating" # battery has completed its charge cycle, and waiting to go to resting mode
         ]
     },
-    UPS_ALARM_KEY: {
-        "description": "UPS alarm status",
+    CALC_BATTERY_STATUS_KEY: {
+        "description": "Battery status (extracted from ups.status)",
+        "states": [
+            "NONE", # the battery is fully charged, and not charging nor discharging
+            "CHRG", # battery is charging
+            "DISCHRG" # battery is discharging
+        ]
+    },
+    CALC_ALARM_STATUS_KEY: {
+        "description": "UPS alarm status (extracted from ups.status)",
         "states": [
             "LB", # Low battery
             "HB", # High battery
@@ -265,6 +272,12 @@ info_metric_config = {
     },
     "ups.test.result": {
         "description": "Result of last self-test",
+    },
+    "ups.alarm": {
+        "description": "UPS alarm status"
+    },
+    "ups.status": {
+        "description": "UPS status"
     }
 }
 
@@ -290,33 +303,23 @@ def unwrap_legacy_ups_status(statistics: Dict[str, str]):
 
     if parts[0] == "ALARM":
         alarm_type = parts[-1]  # Assuming the last part is the alarm type
-        if UPS_ALARM_KEY in statistics:
-            statistics[UPS_ALARM_KEY] += " " + alarm_type
-            logging.warn(f"Ambiguous alarm status. Probably it's not configured correctly:\n\t{UPS_STATUS_KEY} = {original_status}\n\t{UPS_ALARM_KEY} = {statistics[UPS_ALARM_KEY]}")
-        else:
-            statistics[UPS_ALARM_KEY] = alarm_type
+        statistics[CALC_ALARM_STATUS_KEY] = alarm_type
         parts = parts[1:-1]  # Remove the ALARM part and the alarm type
 
     if parts:
-        statistics[UPS_STATUS_KEY] = parts[0]
+        statistics[CALC_UPS_STATUS_KEY] = parts[0]
     else:
         logging.error("Missing UPS status after processing ALARM. Check UPS status configuration.")
         return
 
     if len(parts) > 1:
-        legacy_battery_status = parts[1]
-        battery_status = CHARGER_STATUS_LEGACY_TO_NEW.get(legacy_battery_status, "resting")
-        if BTR_CHRG_STAT_KEY in statistics and statistics[BTR_CHRG_STAT_KEY] != battery_status:
-            logging.warning(f"Ambiguous battery charger status. The system might not be configured correctly:\n\t{UPS_STATUS_KEY} = {original_status}\n\t{BTR_CHRG_STAT_KEY} = {statistics[BTR_CHRG_STAT_KEY]}")
-        statistics[BTR_CHRG_STAT_KEY] = battery_status
-    elif BTR_CHRG_STAT_KEY not in statistics:
+        battery_status = parts[1]
+        statistics[CALC_BATTERY_STATUS_KEY] = battery_status
+    else:
         # If the battery status is not present, assume it's resting
-        statistics[BTR_CHRG_STAT_KEY] = "resting"
+        statistics[CALC_BATTERY_STATUS_KEY] = "NONE"
 
 def calculate_ups_power(statistics: Dict[str, str]):
-    if UPS_POWER_KEY in statistics:
-        return
-
     try:
         load_pct = int(statistics.get("ups.load"))
         real_power_nominal = int(statistics.get("ups.realpower.nominal"))
@@ -324,7 +327,7 @@ def calculate_ups_power(statistics: Dict[str, str]):
     except ValueError:
         power = 0
 
-    statistics[UPS_POWER_KEY] = str(power)
+    statistics[CALC_REALPOWER_KEY] = str(power)
 
 def safe_remove_metric(key, ups):
     if key in service_metrics:
